@@ -110,7 +110,11 @@ export function computeGroundShifts(framesDB) {
 
         if (!p || !shadowKeys.has(pieceKey(p)) || !(p.w > p.h)) return null;
 
-        return { x: p.x + p.w / 2, y: p.y + p.h / 2 };
+        // .sam: x,y e' il punto d'aggancio del frammento, l'angolo in alto a sinistra e' x+ox, y+oy
+        const ox = p.sam ? Number(p.ox) || 0 : 0;
+        const oy = p.sam ? Number(p.oy) || 0 : 0;
+
+        return { x: p.x + ox + p.w / 2, y: p.y + oy + p.h / 2 };
     });
 
     const ref = anchors.find(a => a);
@@ -198,13 +202,13 @@ function handed(p) {
     in modo continuo.
 */
 
-let samSoft = 0.3;
+let samSoft = 0;
 
 export function setSamSoft(v) {
 
     const n = Number(v);
 
-    samSoft = Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0.3;
+    samSoft = Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0;
 }
 
 function samFade(t) {

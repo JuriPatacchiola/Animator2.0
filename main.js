@@ -8,7 +8,9 @@ import {
     TICK_MS,
     composeFrame,
     computeGroundShifts,
+    findShadowKeys,
     frameDuration,
+    pieceKey,
     sampleSequence,
     sequenceBounds,
     sequenceTotalTicks,
@@ -76,6 +78,9 @@ const state = {
     // .sam: sequenze complete del file e nomi mostrati (state.sequences ha quelle ridotte ai frame principali)
     samFull: {},
     samLabels: {},
+
+    // .sam: ritagli (pieceKey) che fanno da ombra: il pezzo piatto sempre sotto a tutto
+    samShadowKeys: null,
 
     // durata di 1 tick in millisecondi: 1/60 s per i file CGG / CGS; per un .sam si
     // sceglie dal cursore "Velocita' .sam" (anteprima ed esportazioni usano lo stesso valore)
@@ -261,6 +266,10 @@ chkSmooth.addEventListener(
 
         state.smooth = chkSmooth.checked;
 
+        saveExportPrefs();
+
+        refreshSamInfo();
+
         chkSmooth.blur();
 
         renderCurrentFrame();
@@ -268,11 +277,28 @@ chkSmooth.addEventListener(
 );
 
 
+// "Blocca a terra" ricorda la scelta di ogni formato: nei CGG di solito serve (le righe
+// hanno ritagli diversi e l'unita' scivolerebbe), nei .sam lo spostamento dell'ombra e'
+// quello vero del gioco (uno scatto in avanti), quindi li' parte spenta
+const lockPref = { cgg: true, sam: false };
+
+function applyLockPref() {
+
+    const v = lockPref[state.samMode ? 'sam' : 'cgg'];
+
+    chkLock.checked = v;
+    state.lock = v;
+}
+
 chkLock.addEventListener(
     'change',
     () => {
 
         state.lock = chkLock.checked;
+
+        lockPref[state.samMode ? 'sam' : 'cgg'] = chkLock.checked;
+
+        saveExportPrefs();
 
         chkLock.blur();
 
@@ -358,14 +384,6 @@ function applyAutoShadow() {
 
     if (!state.framesDBOrig.length) return;
 
-    // unita' .sam: si disegna cosi' com'e'
-    if (state.samMode) {
-
-        state.framesDB = state.framesDBOrig;
-
-        return;
-    }
-
     state.framesDB = chkAutoShadow.checked
         ? withMissingShadows(state.framesDBOrig)
         : state.framesDBOrig;
@@ -376,6 +394,18 @@ chkAutoShadow.addEventListener(
     () => {
 
         applyAutoShadow();
+
+        // .sam: i frame principali si scelgono guardando i pezzi, che ora sono cambiati
+        if (state.samMode) {
+
+            applySamReduce();
+
+            state.frameIndex = 0;
+            state.ticks = 0;
+            state.accum = 0;
+
+            updateTimelineUI();
+        }
 
         saveExportPrefs();
 
@@ -787,8 +817,8 @@ async function loadSamFiles(files) {
         state.framesDBOrig = unit.framesDB;
         state.framesDB = unit.framesDB;
 
-        // niente ombra da cui ricavare il blocco a terra
-        state.shifts = unit.framesDB.map(() => ({ x: 0, y: 0 }));
+        // punto d'appoggio di ogni frame (l'ombra del .sam), come per il CGG
+        state.shifts = computeGroundShifts(unit.framesDB);
 
         setSamMode(unit);
 
@@ -1355,9 +1385,12 @@ function setStandardMode() {
 
     selectAnim.value = state.current;
 
-    // sono opzioni dei file CGG (ombra)
+    state.samShadowKeys = null;
+
     chkAutoShadow.disabled = false;
     chkLock.disabled = false;
+
+    applyLockPref();
 
     // i CGS contano sempre 1/60 di secondo per tick
     state.tickMs = TICK_MS;
@@ -1382,11 +1415,19 @@ function setSamMode(unit) {
 
     } catch (e) { /* ignoro */ }
 
-    applySamReduce();
+    // ombra del .sam (il pezzo piatto sotto a tutto): serve a "Blocca a terra" e a
+    // "Ombra a terra se manca", che funzionano come per il CGG. Le caselle restano
+    // come le hai messe tu: il caricamento di un file non le cambia.
+    state.samShadowKeys = findShadowKeys(unit.framesDB);
 
-    // niente CGG: l'ombra aggiunta e il blocco a terra non c'entrano
-    chkAutoShadow.disabled = true;
-    chkLock.disabled = true;
+    chkAutoShadow.disabled = false;
+    chkLock.disabled = false;
+
+    applyLockPref();
+
+    applyAutoShadow();
+
+    applySamReduce();
 
     // velocita' scelta per i .sam (salvata nel browser)
     state.tickMs = readSamTick();
@@ -1435,20 +1476,27 @@ function applySamReduce() {
 
     state.current = selectAnim.value;
 
-    samEls.reduceInfo.textContent = tol
-        ? 'Frame: ' + parts.join(' · ')
-        : 'Tutti i frame del file (' + parts.join(' · ') + ')';
-
-    // senza i passaggi intermedi servono i frame creati dal "Morbido": anteprima ed esportazione
-    if (tol) {
-
-        chkSmooth.checked = true;
-        state.smooth = true;
-
-        document.getElementById('exportSmooth').checked = true;
-    }
+    refreshSamInfo();
 
     updateSamDuration();
+}
+
+// riga sotto "Frame da usare". Non cambia nessuna casella: se il Morbido e' spento lo dice soltanto
+function refreshSamInfo() {
+
+    if (!state.samMode) return;
+
+    const tol = Number(samEls.reduce.value) || 0;
+
+    const parts = state.animNames.map(k =>
+        `${state.samLabels[k]} ${state.samFull[k].length}${tol ? ' → ' + state.sequences[k].length : ''}`
+    );
+
+    const noSmooth = tol && (!state.smooth || !document.getElementById('exportSmooth').checked);
+
+    samEls.reduceInfo.textContent =
+        (tol ? 'Frame: ' + parts.join(' · ') : 'Tutti i frame del file (' + parts.join(' · ') + ')') +
+        (noSmooth ? '\n⚠ Morbido spento: con i frame principali può sembrare a scatti' : '');
 }
 
 samEls.reduce.addEventListener('change', () => {
@@ -2314,6 +2362,14 @@ try {
 
     if (v && v.smooth === false) document.getElementById('exportSmooth').checked = false;
 
+    // le caselle dello schermo restano come le hai lasciate (anche cambiando file)
+    if (v && v.screenSmooth === false) { chkSmooth.checked = false; state.smooth = false; }
+
+    if (v && v.lock === false) lockPref.cgg = false;
+    if (v && v.lockSam === true) lockPref.sam = true;
+
+    applyLockPref();
+
     if (v && v.autoShadow === false) chkAutoShadow.checked = false;
 
     if (v && v.gifLimit === false) document.getElementById('gifLimit').checked = false;
@@ -2353,7 +2409,10 @@ function saveExportPrefs() {
             bgAll: bgEls.all.checked,
             gifSoft: document.getElementById('gifSoft').value,
             gifSoftV: 2,
-            autoShadow: chkAutoShadow.checked
+            autoShadow: chkAutoShadow.checked,
+            screenSmooth: chkSmooth.checked,
+            lock: lockPref.cgg,
+            lockSam: lockPref.sam
         }));
 
     } catch (e) { /* ignoro */ }
@@ -2362,6 +2421,8 @@ function saveExportPrefs() {
 ['gifScale', 'gifFps', 'exportSmooth', 'gifLimit', 'gifLimitMp'].forEach(id => document.getElementById(id).addEventListener('change', () => {
 
     saveExportPrefs();
+
+    refreshSamInfo();
 
     updateExportInfo();
 }));
@@ -2625,7 +2686,13 @@ function makeShadowTest() {
         return v;
     };
 
+    // .sam: l'ombra e' il pezzo piatto che sta sotto a tutto in quasi tutti i frame
+    // (come per il CGG), qualunque colore abbia il disegno
+    const samKeys = state.samMode ? state.samShadowKeys : null;
+
     return (p) => {
+
+        if (p && p.sam && samKeys && p.blendMode !== 1 && p.h >= 2 && p.w >= p.h * 2 && !Number(p.rad) && samKeys.has(pieceKey(p))) return true;
 
         if (!img || !p || p.blendMode === 1) return false;
 
