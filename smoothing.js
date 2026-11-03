@@ -194,12 +194,12 @@ function handed(p) {
 }
 
 /*
-    Formato .sam: ogni posa e' fatta di frammenti propri (a ogni posa cambiano quasi
-    tutti i disegni), quindi tra due pose non c'e' niente da muovere: i pezzi diversi
-    si possono solo tenere fermi o dissolvere. "samSoft" e' la parte finale del frame
-    in cui avviene la dissolvenza (0 = taglio netto, come nel file; 1 = per tutto il
-    frame). I pezzi che sono lo stesso disegno in entrambe le pose si muovono sempre
-    in modo continuo.
+    Pezzi che cambiano disegno tra due frame (vale per CGG e per .sam): non c'e' niente
+    da muovere, si possono solo tenere fermi o dissolvere. "samSoft" e' la parte finale
+    del frame in cui avviene la dissolvenza (0 = taglio netto, come nel file: nessuna
+    trasparenza inventata; 1 = per tutto il frame, e' il vecchio "Morbido" dei CGG).
+    I pezzi che sono lo stesso disegno in entrambi i frame si muovono sempre in modo
+    continuo.
 */
 
 let samSoft = 0;
@@ -225,10 +225,11 @@ function samFade(t) {
 
     - un pezzo presente in entrambi (stesso ritaglio) si muove, ruota e
       cambia opacita' in modo continuo;
-    - un pezzo che compare o sparisce (forme del mantello, scie, ...)
-      entra / esce con una dissolvenza;
-    - il pezzo in primo piano (il corpo) non sfuma: cambia a meta' tempo,
-      cosi' il personaggio non diventa mai trasparente.
+    - un pezzo che compare o sparisce (forme del mantello, scie, ...) resta
+      com'e' fino al frame successivo (taglio netto, come nel file); solo se
+      si sceglie una dissolvenza (samSoft) entra / esce sfumando;
+    - il pezzo in primo piano (il corpo) non diventa mai trasparente da solo:
+      cambia di colpo (con la dissolvenza lunga, a meta' tempo).
 */
 
 export function blendPieces(a, b, t, offA, offB, maxMove = 30) {
@@ -302,8 +303,8 @@ export function blendPieces(a, b, t, offA, offB, maxMove = 30) {
             return;
         }
 
-        // formato .sam: la dissolvenza avviene solo alla fine del frame (vedi samSoft)
-        const ta = p.sam ? samFade(t) : t;
+        // la dissolvenza avviene solo alla fine del frame, e solo se scelta (vedi samSoft)
+        const ta = samFade(t);
 
         out.push({
             ...p,
@@ -320,7 +321,7 @@ export function blendPieces(a, b, t, offA, offB, maxMove = 30) {
 
         if (used.has(j) || !q || !(q.w > 0) || !(q.h > 0)) return;
 
-        const tb = q.sam ? samFade(t) : t;
+        const tb = samFade(t);
 
         out.push({
             ...q,

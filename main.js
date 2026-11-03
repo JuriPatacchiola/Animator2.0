@@ -1281,9 +1281,9 @@ const samEls = {
     soft: document.getElementById('samSoft')
 };
 
-// passaggio tra i disegni di due pose (scelta salvata nel browser)
+// passaggio tra i disegni di due frame, CGG e .sam (scelta salvata nel browser)
 // (chiave nuova: una dissolvenza scelta per prova con le versioni vecchie non resta attiva senza che tu lo sappia)
-const SAM_SOFT_KEY = 'animator.samSoft2';
+const SAM_SOFT_KEY = 'animator.samSoft3';
 
 try {
 
@@ -1303,14 +1303,14 @@ function refreshSoftWarn() {
 
     if (!el) return;
 
-    const on = state.samMode && Number(samEls.soft.value) > 0;
+    const on = Number(samEls.soft.value) > 0;
 
     el.style.display = on ? 'block' : 'none';
 
     if (on) {
 
         el.textContent = '⚠ «Passaggio tra i disegni» è su «' + samEls.soft.selectedOptions[0].text.replace(/\s*\(.*\)\s*$/, '')
-            + '»: tra una posa e l\'altra le immagini si mescolano e si vedono doppie (effetto fantasma) in GIF, APNG e video. '
+            + '»: quando un pezzo cambia disegno le immagini si mescolano e si vedono pezzi semitrasparenti e doppi (effetto fantasma) in GIF, APNG e video. '
             + 'Per i frame esatti del file scegli «Netto».';
     }
 }
@@ -4040,6 +4040,7 @@ const fvEls = {
     bigCv: document.getElementById('fvBigCv'),
     bigInfo: document.getElementById('fvBigInfo'),
     bigPieces: document.getElementById('fvBigPieces'),
+    smooth: document.getElementById('fvSmooth'),
     play: document.getElementById('fvPlay'),
     bg: document.getElementById('fvBg')
 };
@@ -4159,6 +4160,8 @@ async function openFrameView() {
     fvEls.hint.className = 'fv-hint';
     fvEls.netto.style.display = 'none';
     fvEls.summary.textContent = 'Preparo i frame…';
+
+    fvEls.smooth.checked = document.getElementById('exportSmooth').checked;
 
     await pause0();
 
@@ -4286,14 +4289,31 @@ async function openFrameView() {
     const nFx = items.filter(it => it.fx.length).length;
     const nEmpty = items.filter(it => it.visible === 0).length;
 
-    const soft = state.samMode ? Number(samEls.soft.value) : 0;
+    const soft = Number(samEls.soft.value);
 
-    const softName = state.samMode ? samEls.soft.selectedOptions[0].text.replace(/\s*\(.*\)\s*$/, '') : '';
+    const softName = samEls.soft.selectedOptions[0].text.replace(/\s*\(.*\)\s*$/, '');
+
+    // frame del FILE (senza Morbido ne' dissolvenze) che hanno davvero pezzi semitrasparenti
+    let nFile = 0;
+
+    for (let i = 0; i < plan.sequence.length; i++) {
+
+        const base = composeFrame({
+            sequence: plan.sequence,
+            framesDB: state.framesDB,
+            shifts: plan.shifts,
+            index: i,
+            t: 0,
+            smooth: false
+        }) || [];
+
+        if (fvInspect(plan, base).fx.length) nFile++;
+    }
 
     fvEls.summary.textContent = `${items.length} frame diversi (${plan.n} fotogrammi in tutto)`
         + ` · con pezzi semitrasparenti: ${nFx} · vuoti: ${nEmpty}`
-        + (state.samMode ? ` · Passaggio tra i disegni: ${softName}` : '')
-        + ` · Morbido: ${plan.smooth ? 'sì' : 'no'}`;
+        + ` · Passaggio tra i disegni: ${softName}`
+        + ` · Esporta fluido: ${plan.smooth ? 'sì' : 'no'}`;
 
     const lines = [];
 
@@ -4303,13 +4323,17 @@ async function openFrameView() {
 
         if (soft > 0) {
 
-            lines.push(`⚠ ${nFx} frame hanno pezzi semitrasparenti (bordo arancione). Li crea il «Passaggio tra i disegni» (ora su «${softName}»): nel file .sam non ci sono. Premi il pulsante «Netto» in alto per toglierli.`);
+            lines.push(`⚠ ${nFx} frame hanno pezzi semitrasparenti (bordo arancione). `
+                + (nFile
+                    ? `Nel file ce ne sono solo ${nFile} (frame del file); il resto lo crea il «Passaggio tra i disegni» (ora su «${softName}»).`
+                    : `Nel file nessun pezzo è semitrasparente: li crea il «Passaggio tra i disegni» (ora su «${softName}»).`)
+                + ' Premi il pulsante «Netto» in alto per toglierli.');
 
             fvEls.netto.style.display = '';
 
         } else {
 
-            lines.push(`${nFx} frame hanno pezzi semitrasparenti (bordo arancione): qui la trasparenza è scritta nel file stesso (l'ombra non conta). Clicca un frame per vedere quale pezzo e quanto.`);
+            lines.push(`${nFx} frame hanno pezzi semitrasparenti (bordo arancione): ${nFile ? `nel file ce ne sono ${nFile} frame (trasparenza scritta nel file stesso, l'ombra non conta)` : 'vengono dall\'opacità tra un frame e l\'altro dell\'esportazione fluida'}. Clicca un frame per vedere quale pezzo e quanto.`);
         }
 
     } else if (!nEmpty) {
@@ -4410,6 +4434,18 @@ fvEls.play.onclick = () => { if (fv.playing) fvStopPlay(); else fvStartPlay(); }
 fvEls.bg.addEventListener('change', () => { if (fv.cur >= 0) fvShowBig(fv.cur, true); });
 document.getElementById('fvPrev').onclick = () => fvShowBig(fv.cur - 1);
 document.getElementById('fvNext').onclick = () => fvShowBig(fv.cur + 1);
+
+// stessa casella «Esporta fluido» del pannello di esportazione (non il «Morbido» dello schermo)
+fvEls.smooth.addEventListener('change', () => {
+
+    const box = document.getElementById('exportSmooth');
+
+    box.checked = fvEls.smooth.checked;
+
+    box.dispatchEvent(new Event('change'));
+
+    openFrameView();
+});
 
 fvEls.only.addEventListener('change', () => fvEls.grid.classList.toggle('only-fx', fvEls.only.checked));
 
