@@ -88,6 +88,22 @@
                     </select>
                 </div>
 
+                <div id="samSpeed"
+                    style="display:none;font-size:13px;color:#9ca3af;flex-direction:column;gap:6px;margin-bottom:10px"
+                    title="Nel file .sam ogni frame dura un certo numero di tick, ma il file non dice quanto dura un tick. 16,7 ms = 1/60 di secondo (come i CGS); 8,3 ms = 1/120 di secondo (di partenza). Se l'animazione ti sembra lenta abbassa il valore, se veloce alzalo. Vale per l'anteprima e per GIF, APNG, video e PNG.">
+                    <span>Velocità .sam: ms per tick <span style="color:#6b7280">(16,7 = 1/60 s · 8,3 = 1/120
+                            s)</span></span>
+                    <span style="display:flex;align-items:center;gap:8px">
+                        <input type="range" id="samTickRange" min="2" max="40" step="0.1" value="8.3"
+                            style="flex:1;min-width:60px;margin:0">
+                        <input type="number" id="samTickMs" min="2" max="80" step="0.1" value="8.3"
+                            style="flex:none;width:60px;padding:4px;background:#2a2f3a;color:#fff;border:1px solid #4b5563;border-radius:4px">
+                        <button id="samTickReset" class="secondary-btn" style="flex:none;padding:4px 8px"
+                            title="Torna a 8,3 ms (1/120 s)">↺</button>
+                    </span>
+                    <span id="samDuration" style="font-size:12px"></span>
+                </div>
+
                 <div title="Animazione Completa: quante volte ripetere ogni parte, nell'ordine idle, move, attack. Con 0 la parte viene saltata."
                     style="font-size:13px;color:#9ca3af;display:flex;flex-direction:column;gap:6px">
                     Completa: ripetizioni

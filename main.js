@@ -72,6 +72,10 @@ const state = {
     // true se l'unita' viene da un file .sam (frammenti PNG, niente CGG)
     samMode: false,
 
+    // durata di 1 tick in millisecondi: 1/60 s per i file CGG / CGS; per un .sam si
+    // sceglie dal cursore "Velocita' .sam" (anteprima ed esportazioni usano lo stesso valore)
+    tickMs: TICK_MS,
+
     // CGG cosi' com'e' nel file e CGG in uso (con l'ombra aggiunta dove manca)
     framesDBOrig: [],
     framesDB: [],
@@ -878,7 +882,7 @@ function renderCurrentFrame() {
         running
             ? Math.min(
                 1,
-                (state.ticks + state.accum / TICK_MS) /
+                (state.ticks + state.accum / state.tickMs) /
                 state.currentFrameDuration
             )
             : 0;
@@ -1117,6 +1121,8 @@ selectAnim.onchange =
         state.current =
             event.target.value;
 
+        updateSamDuration();
+
 
         state.frameIndex = 0;
 
@@ -1214,6 +1220,76 @@ function beginPlayback(firstOrder = ['idle', 'atk', 'move']) {
 
 
 // ============================================================
+// VELOCITA' DEI .SAM
+//
+// Nel .sam ogni frame dura "dur" tick, ma il file non dice quanto
+// dura un tick. Con 1/60 di secondo (come i CGS) le animazioni
+// vengono lunghe il doppio di quelle del gioco, e con loro le GIF
+// e i video (il doppio dei fotogrammi). Il valore di partenza e'
+// 1/120 di secondo (8,3 ms) e si puo' cambiare: cursore sotto il
+// menu delle animazioni. Vale per l'anteprima e per tutte le
+// esportazioni.
+// ============================================================
+
+const SAM_TICK_KEY = 'animator.samTick';
+const SAM_TICK_DEFAULT = 1000 / 120;
+
+const samSpeedBox = document.getElementById('samSpeed');
+
+const samEls = {
+    range: document.getElementById('samTickRange'),
+    num: document.getElementById('samTickMs'),
+    info: document.getElementById('samDuration')
+};
+
+const round1 = (v) => Math.round(v * 10) / 10;
+
+function readSamTick() {
+
+    try {
+
+        const v = Number(localStorage.getItem(SAM_TICK_KEY));
+
+        if (v >= 2 && v <= 80) return v;
+
+    } catch (e) { /* ignoro */ }
+
+    return SAM_TICK_DEFAULT;
+}
+
+// "Durata: 7,4 s" dell'animazione scelta con la velocita' di adesso
+function updateSamDuration() {
+
+    if (!state.samMode) return;
+
+    const seq = state.sequences[state.current] || [];
+
+    const ticks = sequenceTotalTicks(seq);
+
+    samEls.info.textContent =
+        `${seq.length} frame · durata ${(ticks * state.tickMs / 1000).toFixed(2).replace('.', ',')} s`;
+}
+
+function setSamTick(ms) {
+
+    const v = Math.min(80, Math.max(2, Number(ms) || SAM_TICK_DEFAULT));
+
+    state.tickMs = v;
+
+    samEls.num.value = round1(v);
+    samEls.range.value = v;
+
+    try { localStorage.setItem(SAM_TICK_KEY, String(v)); } catch (e) { /* ignoro */ }
+
+    updateSamDuration();
+}
+
+samEls.range.addEventListener('input', () => setSamTick(samEls.range.value));
+samEls.num.addEventListener('change', () => setSamTick(samEls.num.value));
+
+document.getElementById('samTickReset').addEventListener('click', () => setSamTick(SAM_TICK_DEFAULT));
+
+// ============================================================
 // MODO CGG / MODO .SAM
 //
 // Con i file CGG / CGS le animazioni sono sempre idle, atk, move. Con un
@@ -1250,6 +1326,10 @@ function setStandardMode() {
     // sono opzioni dei file CGG (ombra)
     chkAutoShadow.disabled = false;
     chkLock.disabled = false;
+
+    // i CGS contano sempre 1/60 di secondo per tick
+    state.tickMs = TICK_MS;
+    samSpeedBox.style.display = 'none';
 }
 
 function setSamMode(unit) {
@@ -1268,6 +1348,13 @@ function setSamMode(unit) {
     // niente CGG: l'ombra aggiunta e il blocco a terra non c'entrano
     chkAutoShadow.disabled = true;
     chkLock.disabled = true;
+
+    // velocita' scelta per i .sam (salvata nel browser)
+    state.tickMs = readSamTick();
+    samEls.num.value = round1(state.tickMs);
+    samEls.range.value = state.tickMs;
+    samSpeedBox.style.display = 'flex';
+    updateSamDuration();
 
     if (state.current !== 'all' && !state.sequences[state.current]) state.current = unit.order[0];
 
@@ -2337,7 +2424,7 @@ function exportPlan(scale, maxMp = 0) {
     const totalTicks = sequenceTotalTicks(sequence);
 
     // durata del loop in centesimi di secondo (unita' di GIF e APNG)
-    const totalCs = totalTicks * 100 / 60;
+    const totalCs = totalTicks * state.tickMs / 10;
 
     // frame intermedi: si sceglie qui, a prescindere dal "Morbido" dello schermo
     const smooth = document.getElementById('exportSmooth').checked;
@@ -3112,7 +3199,7 @@ function gameLoop(timestamp) {
 
     // scheda in background / rallentamento: non recuperare di colpo
     if (dt > 100 || dt < 0) {
-        dt = TICK_MS;
+        dt = state.tickMs;
     }
 
 
@@ -3134,9 +3221,9 @@ function gameLoop(timestamp) {
     let changed = false;
 
 
-    while (state.accum >= TICK_MS) {
+    while (state.accum >= state.tickMs) {
 
-        state.accum -= TICK_MS;
+        state.accum -= state.tickMs;
 
         state.ticks++;
 
