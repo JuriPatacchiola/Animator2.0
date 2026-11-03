@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="it">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2D Animator Pro</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+    <div class="app-container">
+        <aside class="sidebar">
+            <div class="background-logo">
+                <img class="logo" src="assets/img-logo/logo.png" alt="Logo">
+            </div>
+
+
+            <div class="upload-group">
+                <h3>1. File Base (Obbligatori)</h3>
+                <label class="custom-file-upload">
+                    <input type="file" id="img" accept=".png,.jpg"> 📤 Carica Immagine (PNG)
+                </label>
+                <label class="custom-file-upload">
+                    <input type="file" id="cgg" accept=".csv,.cgg"> 📤 Carica Struttura (CGG)
+                </label>
+                <button id="openAssembler" class="secondary-btn" style="width:100%;margin-top:6px"
+                    title="Per le unità senza file CGG: costruisci i frame a mano dallo sheet">🛠 Non ho il CGG:
+                    costruiscilo</button>
+            </div>
+
+            <div class="upload-group">
+                <h3>2. Animazioni (CGS)</h3>
+                <label class="custom-file-upload">
+                    <input type="file" id="idle" accept=".csv,.cgs"> 🧍 Idle
+                </label>
+                <label class="custom-file-upload">
+                    <input type="file" id="atk" accept=".csv,.cgs"> ⚔️ Attack
+                </label>
+                <label class="custom-file-upload">
+                    <input type="file" id="move" accept=".csv,.cgs"> 🏃 Move
+                </label>
+            </div>
+
+            <div class="controls">
+                <button id="start" class="primary-btn">▶ AVVIA ANIMAZIONE</button>
+
+                <div class="manual-controls" style="display: flex; gap: 5px; margin-top: 10px;">
+                    <button id="prevFrame" class="secondary-btn" style="flex:1">⬅️</button>
+                    <button id="togglePause" class="secondary-btn" style="flex:2">⏸ PAUSA</button>
+                    <button id="nextFrame" class="secondary-btn" style="flex:1">➡️</button>
+                </div>
+
+                <div style="display:flex;align-items:center;gap:8px;font-size:12px;color:#9ca3af">
+                    <span id="zoomLabel" style="flex:1">Zoom</span>
+                    <button id="resetView" class="secondary-btn" title="Riporta zoom e posizione ai valori iniziali">🎯
+                        Reset vista</button>
+                </div>
+
+                <div class="timeline-container">
+                    <div class="timeline-header">
+                        <label>Frame Timeline</label>
+                        <span id="frameCounter">0 / 0</span>
+                    </div>
+                    <input type="range" id="timeline" min="0" max="0" value="0">
+                </div>
+
+                <div class="select-wrapper">
+                    <label for="select">Azione Corrente:</label>
+                    <select id="select">
+                        <option value="idle">Idle</option>
+                        <option value="atk">Attack</option>
+                        <option value="move">Move</option>
+                        <option value="all">Completa (idle + move + attack)</option>
+                    </select>
+                </div>
+
+                <div title="Animazione Completa: quante volte ripetere ogni parte, nell'ordine idle, move, attack. Con 0 la parte viene saltata."
+                    style="font-size:13px;color:#9ca3af;display:flex;flex-direction:column;gap:6px">
+                    Completa: ripetizioni
+                    <div style="display:flex;gap:10px;flex-wrap:wrap">
+                        <label>Idle <input type="number" id="repIdle" min="0" max="20" value="2"
+                                style="width:52px;padding:4px;background:#2a2f3a;color:#fff;border:1px solid #4b5563;border-radius:4px"></label>
+                        <label>Move <input type="number" id="repMove" min="0" max="20" value="1"
+                                style="width:52px;padding:4px;background:#2a2f3a;color:#fff;border:1px solid #4b5563;border-radius:4px"></label>
+                        <label>Atk <input type="number" id="repAtk" min="0" max="20" value="1"
+                                style="width:52px;padding:4px;background:#2a2f3a;color:#fff;border:1px solid #4b5563;border-radius:4px"></label>
+                    </div>
+                </div>
+
+                <div class="smooth-controls" style="display: flex; flex-direction: column; gap: 6px; margin-top: 10px;">
+                    <label
+                        title="Mentre l'animazione gira, i pezzi si muovono in modo continuo e quelli che compaiono o spariscono (mantello, scie) sfumano. In pausa si vede sempre il frame esatto.">
+                        <input type="checkbox" id="smooth" checked> Morbido (passaggi senza scatti)
+                    </label>
+                    <label title="Tiene ferma l'ombra: il personaggio non scivola di lato tra un frame e l'altro.">
+                        <input type="checkbox" id="lock" checked> Blocca a terra (ombra ferma)
+                    </label>
+                </div>
+
+                <!-- Bottone aggiornato per Soluzione 2 -->
+                <button id="downloadImage" class="primary-btn"
+                    style="margin-top: 10px; background: linear-gradient(135deg, #3b82f6, #2563eb);">
+                    🖼️ SALVA FRAME CON NOME...
+                </button>
+
+                <div class="gif-controls" style="display: flex; flex-direction: column; gap: 6px; margin-top: 14px;">
+                    <div class="select-wrapper">
+                        <label for="gifFps">Esporta: fotogrammi al secondo</label>
+                        <select id="gifFps">
+                            <option value="50" selected>50 (molto fluida)</option>
+                            <option value="30">30</option>
+                            <option value="25">25</option>
+                        </select>
+                    </div>
+                    <div class="select-wrapper">
+                        <label for="gifScale">Esporta: ingrandimento (6× e più per video grandi)</label>
+                        <select id="gifScale">
+                            <option value="view" selected>Come lo zoom dello schermo (consigliato)</option>
+                            <option value="locked">Zoom del modello (bloccato)</option>
+                            <option value="1">1×</option>
+                            <option value="2">2×</option>
+                            <option value="3">3×</option>
+                            <option value="4">4×</option>
+                            <option value="6">6×</option>
+                            <option value="8">8×</option>
+                            <option value="10">10×</option>
+                        </select>
+                    </div>
+                    <div style="display:flex;flex-direction:column;gap:6px;font-size:13px">
+                        <div style="background:#12151b;border:1px solid #2e3340;border-radius:6px;padding:8px;display:flex;flex-direction:column;gap:6px"
+                            title="Fissa UNA VOLTA zoom, posizione e area: poi ogni unita' esce con la stessa dimensione, lo stesso zoom e il personaggio nello stesso punto, anche se cambi zoom o sposti la vista.">
+                            <button id="lockTemplate" class="primary-btn"
+                                style="padding:10px;font-size:13px;background:linear-gradient(135deg,#0ea5e9,#0369a1)">
+                                🔒 Blocca come modello per tutte le unità
+                            </button>
+                            <label style="font-size:12px;color:#9ca3af">Spazio extra attorno al riquadro
+                                <input type="number" id="tplExtra" value="40" min="0" max="300" step="10"
+                                    style="width:60px;padding:4px;background:#2a2f3a;color:#fff;border:1px solid #4b5563;border-radius:4px">
+                                %
+                            </label>
+                        </div>
+                        <label
+                            title="Esporta esattamente quello che vedi nel riquadro scuro, con lo zoom e la posizione di adesso: sposta e zooma finche' il personaggio sta come vuoi. Ha la precedenza sull'area fissa.">
+                            <input type="checkbox" id="areaScreen"> Come lo schermo (stesso zoom e posizione)
+                        </label>
+                        <button id="anchorFromScreen" class="secondary-btn"
+                            title="Prende la posizione X / Y da dove hai messo il personaggio nell'area di lavoro (per esempio al centro).">
+                            📍 Posizione = come la vedo sullo schermo
+                        </button>
+                        <button id="growArea" class="secondary-btn"
+                            title="Allarga l'area fissa (mai la restringe) per contenere tutte le animazioni di questa unita' senza tagli. Premilo per ogni unita': l'area diventa quella che le contiene tutte, con i piedi sempre nello stesso punto.">
+                            ↔️ Allarga area per questa unità
+                        </button>
+                        <label
+                            title="Se un'animazione esce dal riquadro che vedi, l'area si allarga in modo uguale a destra e a sinistra (e sopra e sotto), cosi' non si taglia niente e il personaggio resta dove l'hai messo. Lo zoom e' quello che hai adesso.">
+                            <input type="checkbox" id="areaExtra" checked> + spazio extra se serve (niente tagli)
+                        </label>
+                        <span id="areaInfo" style="font-size:12px;color:#facc15"></span>
+                        <div id="cssBox"
+                            style="display:none;background:#12151b;border:1px solid #2e3340;border-radius:6px;padding:8px;font-size:12px;color:#9ca3af"
+                            title="Se il contenitore ha le proporzioni dell'area di lavoro (position: relative; overflow: hidden) e il video e' position: absolute, questi sono i valori giusti: il personaggio esce grande come qui.">
+                            CSS del video nel tuo progetto
+                            <pre id="cssText" style="margin:6px 0;color:#facc15;white-space:pre-wrap"></pre>
+                            <button id="copyCss" class="secondary-btn" style="padding:6px">📋 Copia</button>
+                        </div>
+                        <label
+                            title="Spento: l'area contiene tutte le animazioni dell'unita'. Acceso: usa la dimensione scelta qui sotto, uguale per tutte le unita'; la vedi sullo schermo come rettangolo giallo tratteggiato.">
+                            <input type="checkbox" id="areaFixed"> Area fissa (rettangolo giallo)
+                        </label>
+                        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;color:#9ca3af">
+                            <input type="number" id="areaW" value="300" min="16" max="3000" step="10"
+                                style="width:64px;padding:4px;background:#2a2f3a;color:#fff;border:1px solid #4b5563;border-radius:4px"
+                                title="Larghezza"> ×
+                            <input type="number" id="areaH" value="300" min="16" max="3000" step="10"
+                                style="width:64px;padding:4px;background:#2a2f3a;color:#fff;border:1px solid #4b5563;border-radius:4px"
+                                title="Altezza"> px
+                            <span
+                                title="Dove sta il punto di appoggio del personaggio (la croce gialla) dentro l'area, da sinistra: 50% = al centro">posizione
+                                X
+                                <input type="number" id="areaX" value="50" min="5" max="95" step="5"
+                                    style="width:64px;padding:4px;background:#2a2f3a;color:#fff;border:1px solid #4b5563;border-radius:4px">
+                                %</span>
+                            <span title="Dove sta il punto di appoggio dall'alto: 50% = al centro, 80% = in basso">Y
+                                <input type="number" id="areaFeet" value="80" min="5" max="95" step="5"
+                                    style="width:64px;padding:4px;background:#2a2f3a;color:#fff;border:1px solid #4b5563;border-radius:4px">
+                                %</span>
+                        </div>
+                    </div>
+                    <label
+                        title="La GIF ha solo 'trasparente o no': i bordi morbidi e l'ombra vengono fusi con il colore qui sotto. Scegli il colore della pagina dove userai la GIF.">
+                        <input type="checkbox" id="gifTransparent"> GIF: sfondo trasparente
+                    </label>
+                    <label title="Colore di sfondo della GIF; con lo sfondo trasparente serve a fondere bordi e ombra.">
+                        GIF: colore sfondo <input type="color" id="gifBg" value="#0f1218">
+                    </label>
+                    <button id="downloadGif" class="primary-btn"
+                        style="background: linear-gradient(135deg, #10b981, #059669);">
+                        🎞️ ESPORTA GIF
+                    </button>
+                    <label
+                        title="Video WebM con sfondo trasparente (si vede su browser Chrome/Edge/Firefox e in alcuni programmi). Se tolto, usa il colore di sfondo scelto.">
+                        <input type="checkbox" id="videoTransparent" checked> Video: sfondo trasparente
+                    </label>
+                    <button id="downloadVideo" class="primary-btn"
+                        title="Vero file video (.webm), registrato in tempo reale: dura almeno 3 secondi ripetendo l'animazione."
+                        style="background: linear-gradient(135deg, #ef4444, #b91c1c);">
+                        🎬 ESPORTA VIDEO (WebM)
+                    </button>
+                    <button id="downloadMov" class="primary-btn"
+                        title="Video .mov Apple ProRes 4444 con trasparenza vera: QuickTime, Final Cut, Motion, iMovie. Sul Mac diventa HEVC trasparente (per Safari / iPhone) con un clic destro."
+                        style="background: linear-gradient(135deg, #6b7280, #111827);">
+                        🍎 ESPORTA MOV APPLE (trasparente)
+                    </button>
+                    <details
+                        style="font-size:12px;color:#9ca3af;background:#12151b;border:1px solid #2e3340;border-radius:6px;padding:8px">
+                        <summary style="cursor:pointer;color:#d1d5db">Video trasparente per Safari / iPhone (HEVC)
+                        </summary>
+                        <div style="margin-top:6px;line-height:1.5">
+                            Il .mov esportato è ProRes 4444 con trasparenza. Per Safari, iPhone e iPad va
+                            trasformato in HEVC, una volta sola, su un Mac:<br>
+                            <b>1.</b> clic destro sul file .mov nel Finder<br>
+                            <b>2.</b> Servizi (o Azioni rapide) → <b>Codifica file video selezionati</b><br>
+                            <b>3.</b> Impostazione <b>HEVC 1080p</b> (o 4K) e spunta <b>Mantieni trasparenza</b><br>
+                            Nella pagina web:<br>
+                            <code style="color:#facc15;white-space:pre-wrap">&lt;video autoplay loop muted playsinline&gt;
+  &lt;source src="idle-hevc.mov" type="video/quicktime; codecs=hvc1.1.6.H120.b0"&gt;
+  &lt;source src="idle.webm" type="video/webm; codecs=vp09.00.41.08"&gt;
+&lt;/video&gt;</code><br>
+                            L'HEVC va <b>prima</b>: Safari prende quello (trasparente), Chrome / Firefox /
+                            Android il WebM.
+                        </div>
+                    </details>
+                    <button id="downloadApng" class="primary-btn"
+                        title="PNG animato con trasparenza vera (ombra e bagliori morbidi). Si apre nei browser e in molti programmi; non e' un video."
+                        style="background: linear-gradient(135deg, #8b5cf6, #6d28d9);">
+                        ✨ ESPORTA APNG (trasparente)
+                    </button>
+                    <button id="downloadZip" class="primary-btn"
+                        title="Un PNG trasparente per ogni frame della timeline (frame esatti del CGS, senza interpolazione), in uno ZIP: da importare in programmi di montaggio o motori di gioco."
+                        style="background: linear-gradient(135deg, #f59e0b, #d97706);">
+                        🗂️ ESPORTA PNG (ZIP)
+                    </button>
+                </div>
+            </div>
+        </aside>
+
+        <main class="canvas-container">
+            <canvas id="cv"></canvas>
+        </main>
+    </div>
+
+    <div id="asmOverlay" class="asm-overlay" style="display:none">
+        <div class="asm-top">
+            <b>🛠 Costruisci CGG</b>
+            <button id="asmPrev" class="secondary-btn">⬅</button>
+            <input type="number" id="asmFrameNum" min="0" value="0" style="width:56px">
+            <button id="asmNext" class="secondary-btn">➡</button>
+            <span id="asmFrameLabel" style="color:#9ca3af"></span>
+            <span style="flex:1"></span>
+            <select id="asmSeq" title="Lavora solo sui frame usati da questa animazione">
+                <option value="idle">Idle</option>
+                <option value="move">Move</option>
+                <option value="atk">Attack</option>
+                <option value="all">Tutti i frame</option>
+            </select>
+            <button id="asmPlay" class="secondary-btn">▶ Anteprima</button>
+            <button id="asmExport" class="secondary-btn">💾 Esporta CGG</button>
+            <label class="secondary-btn" style="cursor:pointer">📂 Importa CGG<input type="file" id="asmImport"
+                    accept=".csv,.cgg" style="display:none"></label>
+            <button id="asmUse" class="primary-btn" style="width:auto;padding:8px 14px">✔ Usa nell'animatore</button>
+            <button id="asmClose" class="secondary-btn">✖</button>
+        </div>
+        <div id="asmStrip" class="asm-strip"
+            title="Frame dell'animazione scelta: posizione · #numero nel CGG. Attenzione: un frame usato anche da un'altra animazione cambia anche lì.">
+        </div>
+        <div class="asm-body">
+            <div class="asm-left">
+                <div class="asm-help">Clicca un pezzo dello sheet per aggiungerlo al frame. <b>Shift+trascina</b> =
+                    nuovo pezzo manuale, <b>tasto destro</b> = elimina rettangolo.</div>
+                <div style="display:flex;gap:6px;align-items:center;font-size:12px">
+                    Unisci distanza <input type="number" id="asmGap" min="0" max="6" value="0" style="width:46px">
+                    <button id="asmRedetect" class="secondary-btn">Rileva di nuovo</button>
+                </div>
+                <div class="asm-sheetwrap"><canvas id="asmSheet"></canvas></div>
+            </div>
+            <div class="asm-center"><canvas id="asmCanvas"></canvas></div>
+            <div class="asm-right">
+                <div class="asm-help">Trascina i pezzi · frecce = 1 px (Shift 5) · Q/E ruota · [ ] livello · Canc
+                    elimina · , . cambia frame · rotella = zoom · Alt+rotella = ruota · <b>tasto destro o centrale</b>
+                    trascinato = sposta vista</div>
+                <label><input type="checkbox" id="asmOnion" checked> Frame precedente in trasparenza</label>
+                <label><input type="checkbox" id="asmGrid" checked> Griglia e croce (0,0)</label>
+                <div style="display:flex;gap:6px;flex-wrap:wrap">
+                    <button id="asmCopyPrev" class="secondary-btn">Copia dal precedente</button>
+                    <button id="asmCopyFrom" class="secondary-btn">Copia da</button>
+                    <input type="number" id="asmCopySrc" min="0" value="0" style="width:50px">
+                    <button id="asmClear" class="secondary-btn">Svuota frame</button>
+                </div>
+                <div class="asm-selbar">
+                    <span id="asmSelCount" style="color:#9ca3af;font-size:12px;flex:1"></span>
+                    <button id="asmSelAll" class="secondary-btn" title="Ctrl+A">Tutti</button>
+                    <button id="asmSelNone" class="secondary-btn" title="Esc">Nessuno</button>
+                    <button id="asmDelSel" class="secondary-btn danger" title="Canc">🗑 Elimina selezionati</button>
+                </div>
+                <div class="asm-selbar">
+                    <button id="asmCopy" class="secondary-btn" title="Ctrl+C">📋 Copia</button>
+                    <button id="asmCut" class="secondary-btn" title="Ctrl+X">✂ Taglia</button>
+                    <button id="asmPaste" class="secondary-btn"
+                        title="Ctrl+V: incolla sopra a tutto, nelle stesse coordinate. Ctrl+Shift+V (o Shift+clic): incolla sotto a tutto">📥
+                        Incolla</button>
+                </div>
+                <div class="asm-selbar">
+                    <button id="asmGroup" class="secondary-btn" title="Ctrl+G">🔗 Raggruppa</button>
+                    <button id="asmUngroup" class="secondary-btn" title="Ctrl+Shift+G">⛓ Separa</button>
+                    <span style="font-size:11px;color:#9ca3af">Alt+clic = un solo pezzo del gruppo</span>
+                </div>
+                <div class="asm-help">Clic = un pezzo · <b>Ctrl+clic</b> = aggiungi/togli · <b>Shift+clic</b> = da… a…
+                    · nel frame: <b>trascina sul vuoto</b> = rettangolo di selezione (Alt = anche i pezzi solo
+                    toccati)</div>
+                <div id="asmList" class="asm-list"></div>
+                <div id="asmPiece" class="asm-piece">
+                    <div id="asmPieceInfo" style="font-size:12px;color:#9ca3af"></div>
+                    <label>X <input type="number" id="asmP_x"></label>
+                    <label>Y <input type="number" id="asmP_y"></label>
+                    <label>Rotazione <input type="number" id="asmP_rotate"></label>
+                    <div style="display:flex;gap:4px;align-items:center">
+                        <button id="asmRotM" class="secondary-btn">⟲</button>
+                        <input type="number" id="asmStep" value="5" style="width:50px">
+                        <button id="asmRotP" class="secondary-btn">⟳</button>
+                    </div>
+                    <label>Opacità % <input type="number" id="asmP_opacity" min="0" max="100"></label>
+                    <label>Specchio <select id="asmP_flipType">
+                            <option value="0">no</option>
+                            <option value="1">orizzontale</option>
+                            <option value="2">verticale</option>
+                            <option value="3">entrambi</option>
+                        </select></label>
+                    <label>Fusione <select id="asmP_blendMode">
+                            <option value="0">normale</option>
+                            <option value="1">additiva (luce)</option>
+                        </select></label>
+                    <div style="display:flex;gap:4px;flex-wrap:wrap">
+                        <button id="asmFront" class="secondary-btn">Avanti</button>
+                        <button id="asmBack" class="secondary-btn">Indietro</button>
+                        <button id="asmDup" class="secondary-btn">Duplica</button>
+                        <button id="asmDel" class="secondary-btn">Elimina</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <script type="module" src="main.js"></script>
+</body>
+
+</html>

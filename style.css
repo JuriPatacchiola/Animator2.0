@@ -1,0 +1,523 @@
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: #0f1115;
+    color: #e0e0e0;
+    height: 100vh;
+    display: flex;
+    overflow: hidden;
+}
+
+.app-container {
+    display: flex;
+    width: 100%;
+    height: 100%;
+}
+
+.background-logo {
+    width: 100%;
+    background: linear-gradient(135deg, #3b82f6, #2563eb);
+    box-shadow: 0 4px 15px rgba(59, 130, 246, 0.3);
+    border-radius: 8px;
+}
+
+.logo {
+    width: 100%;
+    height: auto;
+    padding: 20px;
+}
+
+.sidebar {
+    width: 320px;
+    background: #1a1d24;
+    padding: 25px;
+    border-right: 1px solid #2a2e39;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    overflow-y: auto;
+    box-shadow: 2px 0 10px rgba(0, 0, 0, 0.5);
+    z-index: 10;
+}
+
+.sidebar h1 {
+    font-size: 22px;
+    color: #fff;
+    margin-bottom: 10px;
+    border-bottom: 2px solid #3b82f6;
+    padding-bottom: 10px;
+}
+
+.sidebar h1 span {
+    color: #3b82f6;
+}
+
+.upload-group {
+    background: #222630;
+    padding: 15px;
+    border-radius: 8px;
+    border: 1px solid #2e3340;
+}
+
+.upload-group h3 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 12px;
+    color: #9ca3af;
+}
+
+input[type="file"] {
+    display: none;
+}
+
+.custom-file-upload {
+    display: block;
+    padding: 12px;
+    background: #2a2f3a;
+    border: 1px dashed #4b5563;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s;
+    font-size: 13px;
+    margin-bottom: 8px;
+    color: #d1d5db;
+}
+
+.custom-file-upload:hover {
+    background: #374151;
+    border-color: #3b82f6;
+    color: #fff;
+}
+
+.custom-file-upload.loaded {
+    border-color: #10b981;
+    color: #10b981;
+    background: rgba(16, 185, 129, 0.1);
+}
+
+.controls {
+    margin-top: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.primary-btn {
+    padding: 15px;
+    background: linear-gradient(135deg, #3b82f6, #2563eb);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    font-weight: bold;
+    font-size: 15px;
+    cursor: pointer;
+    transition: 0.2s;
+    letter-spacing: 1px;
+    box-shadow: 0 4px 15px rgba(59, 130, 246, 0.3);
+}
+
+.primary-btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 6px 20px rgba(59, 130, 246, 0.5);
+}
+
+.secondary-btn {
+    padding: 10px;
+    background: #374151;
+    color: white;
+    border: 1px solid #4b5563;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: bold;
+    transition: 0.2s;
+}
+
+.secondary-btn:hover {
+    background: #4b5563;
+}
+
+.select-wrapper {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.select-wrapper label {
+    font-size: 14px;
+    color: #9ca3af;
+}
+
+select {
+    padding: 12px;
+    background: #2a2f3a;
+    color: white;
+    border: 1px solid #4b5563;
+    border-radius: 6px;
+    font-size: 15px;
+    cursor: pointer;
+    outline: none;
+}
+
+.canvas-container {
+    flex: 1;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background: radial-gradient(circle at center, #2a2e39 0%, #0f1115 100%);
+    position: relative;
+    overflow: hidden;
+    padding: 20px;
+}
+
+canvas {
+    background: transparent;
+    max-width: 100%;
+    max-height: 100%;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    cursor: grab;
+}
+
+canvas:active {
+    cursor: grabbing;
+}
+
+.timeline-container {
+    margin-top: 5px;
+    background: #222630;
+    padding: 12px;
+    border-radius: 8px;
+    border: 1px solid #2e3340;
+}
+
+.timeline-header {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 10px;
+}
+
+.timeline-header label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #9ca3af;
+}
+
+#frameCounter {
+    font-size: 12px;
+    color: #3b82f6;
+    font-weight: bold;
+}
+
+input[type="range"] {
+    width: 100%;
+    background: transparent;
+}
+
+
+/* ============================================================
+   Nuovi controlli (Morbido, Blocca a terra, Esporta GIF)
+   ============================================================ */
+
+.smooth-controls label,
+.gif-controls label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: #d1d5db;
+    cursor: pointer;
+}
+
+.gif-controls {
+    padding-top: 15px;
+    border-top: 1px solid #2e3340;
+}
+
+input[type="color"] {
+    width: 36px;
+    height: 24px;
+    padding: 0;
+    border: 1px solid #4b5563;
+    border-radius: 4px;
+    background: none;
+    cursor: pointer;
+}
+
+.primary-btn:disabled {
+    opacity: 0.6;
+    cursor: wait;
+    transform: none;
+}
+
+
+/* ---------- editor di assemblaggio ---------- */
+.asm-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    background: #0f1115;
+    flex-direction: column
+}
+
+.asm-top {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 8px 12px;
+    background: #161a22;
+    border-bottom: 1px solid #2e3340;
+    flex-wrap: wrap
+}
+
+.asm-top input,
+.asm-top select,
+.asm-right input,
+.asm-right select,
+.asm-left input {
+    background: #2a2f3a;
+    color: #fff;
+    border: 1px solid #4b5563;
+    border-radius: 4px;
+    padding: 4px
+}
+
+.asm-body {
+    flex: 1;
+    display: flex;
+    min-height: 0
+}
+
+.asm-left {
+    width: 410px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px;
+    border-right: 1px solid #2e3340
+}
+
+.asm-sheetwrap {
+    flex: 1;
+    overflow: auto;
+    background: #12151b;
+    border: 1px solid #2e3340
+}
+
+.asm-sheetwrap canvas {
+    display: block;
+    cursor: copy
+}
+
+.asm-center {
+    flex: 1;
+    min-width: 0;
+    position: relative
+}
+
+.asm-center canvas {
+    width: 100%;
+    height: 100%;
+    display: block;
+    cursor: grab
+}
+
+.asm-right {
+    width: 280px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding: 8px;
+    border-left: 1px solid #2e3340;
+    overflow: auto;
+    font-size: 13px
+}
+
+.asm-help {
+    font-size: 12px;
+    color: #9ca3af;
+    line-height: 1.4
+}
+
+.asm-piece {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    background: #12151b;
+    border: 1px solid #2e3340;
+    border-radius: 6px;
+    padding: 8px
+}
+
+.asm-piece label {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px
+}
+
+.asm-list {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap
+}
+
+.asm-chip {
+    background: #2a2f3a;
+    color: #fff;
+    border: 1px solid #4b5563;
+    border-radius: 4px;
+    padding: 2px 8px;
+    cursor: pointer
+}
+
+.asm-selbar {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    flex-wrap: wrap
+}
+
+.asm-selbar .secondary-btn {
+    padding: 6px 8px
+}
+
+.secondary-btn.danger {
+    background: #7f1d1d;
+    border-color: #b91c1c
+}
+
+.secondary-btn.danger:hover {
+    background: #991b1b
+}
+
+.secondary-btn:disabled {
+    opacity: 0.4;
+    cursor: default
+}
+
+.asm-list {
+    max-height: 240px;
+    overflow-y: auto;
+    flex-shrink: 0;
+    user-select: none
+}
+
+.asm-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(52px, 1fr));
+    gap: 4px;
+    max-height: 320px
+}
+
+.asm-chip.asm-thumb {
+    position: relative;
+    padding: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    aspect-ratio: 1;
+    /* scacchiera: si vede anche un pezzo scuro o semitrasparente */
+    background-color: #1f2430;
+    background-image:
+        linear-gradient(45deg, #2a3040 25%, transparent 25%, transparent 75%, #2a3040 75%),
+        linear-gradient(45deg, #2a3040 25%, transparent 25%, transparent 75%, #2a3040 75%);
+    background-size: 10px 10px;
+    background-position: 0 0, 5px 5px
+}
+
+.asm-chip.asm-thumb img {
+    width: 40px;
+    height: 40px;
+    image-rendering: pixelated;
+    pointer-events: none
+}
+
+.asm-chip.asm-thumb span {
+    position: absolute;
+    top: 1px;
+    left: 2px;
+    font-size: 10px;
+    line-height: 1;
+    padding: 1px 3px;
+    border-radius: 3px;
+    background: rgba(15, 17, 21, 0.8);
+    color: #d1d5db;
+    pointer-events: none
+}
+
+.asm-chip.asm-thumb em {
+    position: absolute;
+    bottom: 1px;
+    right: 2px;
+    font-size: 9px;
+    font-style: normal;
+    font-weight: bold;
+    line-height: 1;
+    padding: 1px 3px;
+    border-radius: 3px;
+    color: #0f1115;
+    pointer-events: none
+}
+
+.asm-chip.asm-thumb.on {
+    border-color: #60a5fa;
+    box-shadow: inset 0 0 0 2px #3b82f6
+}
+
+.asm-chip.asm-thumb.on span {
+    background: #3b82f6;
+    color: #fff
+}
+
+.asm-chip.asm-thumb:hover {
+    border-color: #e879f9
+}
+
+.asm-chip.main {
+    outline: 2px solid #ffd400
+}
+
+.asm-strip {
+    display: flex;
+    gap: 4px;
+    padding: 6px 12px;
+    background: #12151b;
+    border-bottom: 1px solid #2e3340;
+    overflow-x: auto;
+    white-space: nowrap;
+    flex-shrink: 0
+}
+
+.asm-strip .asm-chip {
+    flex-shrink: 0;
+    font-size: 12px
+}
+
+.asm-chip.empty {
+    border-style: dashed;
+    color: #9ca3af
+}
+
+.asm-chip.on {
+    background: #3b82f6;
+    border-color: #60a5fa
+}
+
+.asm-sheetwrap canvas {
+    max-width: none !important;
+    max-height: none !important
+}
+
+.asm-piece input,
+.asm-piece select {
+    width: 110px;
+    min-width: 0
+}
