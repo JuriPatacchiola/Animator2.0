@@ -164,29 +164,29 @@ export function parseSam(buf) {
 
 export function samAnimKey(name) {
 
-    const n = String(name).toLowerCase();
+  const n = String(name).toLowerCase();
 
-    if (n === 'idle') return 'idle';
-    if (n === 'move') return 'move';
-    if (n === 'attack' || n === 'atk') return 'atk';
+  if (n === 'idle') return 'idle';
+  if (n === 'move') return 'move';
+  if (n === 'attack' || n === 'atk') return 'atk';
 
-    return n;
+  return n;
 }
 
 const identity = (m) =>
-    Math.abs(m[0] - 1) < 1e-6 && Math.abs(m[1]) < 1e-6 &&
-    Math.abs(m[2]) < 1e-6 && Math.abs(m[3] - 1) < 1e-6;
+  Math.abs(m[0] - 1) < 1e-6 && Math.abs(m[1]) < 1e-6 &&
+  Math.abs(m[2]) < 1e-6 && Math.abs(m[3] - 1) < 1e-6;
 
 // matrice 2x2 in virgola fissa 16.16, in ordine canvas (a, b, c, d)
 function blkMatrix(blk) {
 
-    if (!blk) return null;
+  if (!blk) return null;
 
-    const g = (lo, hi) => ((lo | (hi << 16)) | 0) / 65536;
+  const g = (lo, hi) => ((lo | (hi << 16)) | 0) / 65536;
 
-    const m = [g(blk[0], blk[1]), g(blk[2], blk[3]), g(blk[4], blk[5]), g(blk[6], blk[7])];
+  const m = [g(blk[0], blk[1]), g(blk[2], blk[3]), g(blk[4], blk[5]), g(blk[6], blk[7])];
 
-    return identity(m) ? null : m;
+  return identity(m) ? null : m;
 }
 
 // ------------------------------------------------------------
@@ -219,176 +219,308 @@ const baseOf = (p) => p.slice(p.lastIndexOf('/') + 1);
 
 export async function buildSamUnit(samBuffer, entries, samPath = '') {
 
-    const data = parseSam(samBuffer);
+  const data = parseSam(samBuffer);
 
-    // ---- PNG disponibili, per nome (senza badare alle maiuscole)
-    const byName = new Map();
+  // ---- PNG disponibili, per nome (senza badare alle maiuscole)
+  const byName = new Map();
 
-    for (const e of entries) {
+  for (const e of entries) {
 
-        if (!/\.png$/i.test(e.file.name)) continue;
+    if (!/\.png$/i.test(e.file.name)) continue;
 
-        const k = e.file.name.toLowerCase();
+    const k = e.file.name.toLowerCase();
 
-        if (!byName.has(k)) byName.set(k, []);
+    if (!byName.has(k)) byName.set(k, []);
 
-        byName.get(k).push(e);
+    byName.get(k).push(e);
+  }
+
+  const samDir = dirOf(samPath);
+
+  const find = (name) => {
+
+    const list = byName.get(name.toLowerCase());
+
+    if (!list) return null;
+
+    return (list.find(e => dirOf(e.path) === samDir) || list[0]).file;
+  };
+
+  // ---- lettura dei frammenti
+  const sprites = data.sprites.map(s => ({ ...s, bmp: null }));
+
+  const missing = [];
+
+  await Promise.all(sprites.map(async (s) => {
+
+    const f = find(s.file);
+
+    if (!f) { missing.push(s.file); return; }
+
+    try {
+
+      s.bmp = await createImageBitmap(f);
+
+    } catch (e) {
+
+      missing.push(s.file);
+    }
+  }));
+
+  // ---- atlante (file a scaffali, dal piu' alto al piu' basso)
+  const order = sprites
+    .filter(s => s.bmp)
+    .sort((a, b) => b.bmp.height - a.bmp.height);
+
+  let x = 0, y = 0, rowH = 0, maxX = 0;
+
+  for (const s of order) {
+
+    const w = s.bmp.width, h = s.bmp.height;
+
+    if (x + w + PAD > ATLAS_WIDTH && x > 0) { x = 0; y += rowH + PAD; rowH = 0; }
+
+    s.sx = x; s.sy = y; s.aw = w; s.ah = h;
+
+    x += w + PAD;
+    maxX = Math.max(maxX, x);
+    rowH = Math.max(rowH, h);
+  }
+
+  const atlas = document.createElement('canvas');
+
+  atlas.width = Math.max(1, maxX);
+  atlas.height = Math.max(1, y + rowH);
+
+  const actx = atlas.getContext('2d');
+
+  for (const s of order) {
+
+    actx.drawImage(s.bmp, s.sx, s.sy);
+
+    s.bmp.close && s.bmp.close();
+    s.bmp = null;
+  }
+
+  // ---- da .sam a righe di pezzi + sequenze
+  const initial = {};
+
+  data.slots.forEach(([slot, , sp]) => { initial[slot] = sp; });
+
+  const map = { ...initial };
+
+  const framesDB = [];
+  const sequences = {};
+  const labels = {};
+  const names = [];
+
+  for (const animName of Object.keys(data.anims)) {
+
+    const key = samAnimKey(animName);
+
+    const cur = { ...map };
+
+    const seq = [];
+
+    for (const f of data.anims[animName].frames) {
+
+      for (const s of (f.swap || [])) {
+
+        cur[s.slot] = s.sprite;
+        map[s.slot] = s.sprite;
+      }
+
+      const pieces = [];
+
+      // nel .sam gli elementi sono dal fondo al davanti; nell'app il primo pezzo e' quello davanti
+      for (let i = f.items.length - 1; i >= 0; i--) {
+
+        const it = f.items[i];
+
+        if (it.x === undefined) continue;
+
+        const sp = sprites[cur[it.slot]];
+
+        if (!sp || sp.sx === undefined) continue;
+
+        const opacity = it.color !== undefined ? (it.color >>> 24) / 255 * 100 : 100;
+
+        if (opacity < 0.5) continue;
+
+        pieces.push({
+          sam: true,
+          x: it.x / 20,
+          y: it.y / 20,
+          ox: sp.ox,
+          oy: sp.oy,
+          rad: (it.rot || 0) / 1000,
+          mat: blkMatrix(it.blk),
+          opacity,
+          flipType: 0,
+          blendMode: 0,
+          rotate: 0,
+          sx: sp.sx,
+          sy: sp.sy,
+          w: sp.aw,
+          h: sp.ah,
+          pageId: 0
+        });
+      }
+
+      framesDB.push(pieces);
+
+      seq.push({ id: framesDB.length - 1, xOffset: 0, yOffset: 0, duration: f.dur });
     }
 
-    const samDir = dirOf(samPath);
+    let k = key;
 
-    const find = (name) => {
+    while (sequences[k]) k += '_2';
 
-        const list = byName.get(name.toLowerCase());
+    sequences[k] = seq;
+    labels[k] = animName;
+    names.push(k);
+  }
 
-        if (!list) return null;
+  return {
+    atlas,
+    framesDB,
+    sequences,
+    order: names,
+    labels,
+    missing,
+    warnings: data.warnings || [],
+    spriteCount: sprites.length
+  };
+}
 
-        return (list.find(e => dirOf(e.path) === samDir) || list[0]).file;
-    };
 
-    // ---- lettura dei frammenti
-    const sprites = data.sprites.map(s => ({ ...s, bmp: null }));
+// ------------------------------------------------------------
+// FRAME PRINCIPALI
+//
+// Un .sam ha tantissimi frame (anche 200 per un attacco) perche' molti
+// sono solo passaggi intermedi di un movimento. Con il "Morbido" l'app
+// sa gia' creare i passaggi tra un frame e il successivo, quindi basta
+// tenere i frame PRINCIPALI: un frame si toglie quando e' (entro una
+// tolleranza in pixel) quello che verrebbe fuori interpolando i due
+// frame che lo circondano. Il movimento resta lo stesso, con molti meno
+// frame; i frame dove cambia il disegno (un altro ritaglio) restano
+// tutti, perche' fra due disegni diversi non si puo' interpolare.
+//
+// La durata totale non cambia: ogni frame tenuto dura quanto il suo
+// pezzo di tempo piu' quello dei frame tolti.
+// ------------------------------------------------------------
 
-    const missing = [];
+const lerp = (a, b, t) => a + (b - a) * t;
 
-    await Promise.all(sprites.map(async (s) => {
+// differenza tra due angoli (radianti) per la via piu' corta
+function angleDiff(a, b) {
 
-        const f = find(s.file);
+  const full = Math.PI * 2;
 
-        if (!f) { missing.push(s.file); return; }
+  let d = (b - a) % full;
 
-        try {
+  if (d > Math.PI) d -= full;
+  if (d < -Math.PI) d += full;
 
-            s.bmp = await createImageBitmap(f);
+  return d;
+}
 
-        } catch (e) {
+const IDENTITY = [1, 0, 0, 1];
 
-            missing.push(s.file);
+// quanto si sposta, al massimo, un pezzo del frame k rispetto alla via diretta a -> b (in pixel)
+function deviation(pa, pk, pb, t) {
+
+  // raggio del pezzo attorno all'origine: una rotazione piccola sposta di piu' gli angoli lontani
+  const radius = Math.hypot(
+    Math.max(Math.abs(pa.ox), Math.abs(pa.ox + pa.w)),
+    Math.max(Math.abs(pa.oy), Math.abs(pa.oy + pa.h))
+  );
+
+  const ex = Math.abs(pk.x - lerp(pa.x, pb.x, t));
+  const ey = Math.abs(pk.y - lerp(pa.y, pb.y, t));
+
+  const er = Math.abs(angleDiff(pa.rad + angleDiff(pa.rad, pb.rad) * t, pk.rad)) * radius;
+
+  const ma = pa.mat || IDENTITY;
+  const mb = pb.mat || IDENTITY;
+  const mk = pk.mat || IDENTITY;
+
+  let em = 0;
+
+  for (let i = 0; i < 4; i++) {
+    em = Math.max(em, Math.abs(mk[i] - lerp(ma[i], mb[i], t)));
+  }
+
+  // 5% di opacita' contano come 1 pixel
+  const eo = Math.abs((pk.opacity ?? 100) - lerp(pa.opacity ?? 100, pb.opacity ?? 100, t)) * 0.2;
+
+  return Math.max(ex, ey, er, em * radius, eo);
+}
+
+export function reduceSamSequence(sequence, framesDB, tolerance) {
+
+  const n = sequence.length;
+
+  if (!(tolerance > 0) || n < 3) return sequence;
+
+  const rows = sequence.map(f => framesDB[f.id] || []);
+
+  // "forma" di un frame: quali ritagli, nello stesso ordine
+  const shape = rows.map(r => r.map(p => `${p.sx},${p.sy},${p.w},${p.h},${p.blendMode || 0}`).join('|'));
+
+  const dur = sequence.map(f => Math.max(1, Number(f.duration) || 1));
+
+  const anchors = [0];
+
+  let a = 0;
+
+  while (a < n - 1) {
+
+    let best = a + 1;
+
+    for (let b = a + 2; b < n; b++) {
+
+      if (shape[b] !== shape[a]) break;
+
+      let total = 0;
+
+      for (let k = a; k < b; k++) total += dur[k];
+
+      let ok = true;
+      let elapsed = 0;
+
+      for (let k = a + 1; k < b && ok; k++) {
+
+        elapsed += dur[k - 1];
+
+        if (shape[k] !== shape[a]) { ok = false; break; }
+
+        const t = elapsed / total;
+
+        for (let j = 0; j < rows[k].length; j++) {
+
+          if (deviation(rows[a][j], rows[k][j], rows[b][j], t) > tolerance) { ok = false; break; }
         }
-    }));
+      }
 
-    // ---- atlante (file a scaffali, dal piu' alto al piu' basso)
-    const order = sprites
-        .filter(s => s.bmp)
-        .sort((a, b) => b.bmp.height - a.bmp.height);
+      if (!ok) break;
 
-    let x = 0, y = 0, rowH = 0, maxX = 0;
-
-    for (const s of order) {
-
-        const w = s.bmp.width, h = s.bmp.height;
-
-        if (x + w + PAD > ATLAS_WIDTH && x > 0) { x = 0; y += rowH + PAD; rowH = 0; }
-
-        s.sx = x; s.sy = y; s.aw = w; s.ah = h;
-
-        x += w + PAD;
-        maxX = Math.max(maxX, x);
-        rowH = Math.max(rowH, h);
+      best = b;
     }
 
-    const atlas = document.createElement('canvas');
+    anchors.push(best);
 
-    atlas.width = Math.max(1, maxX);
-    atlas.height = Math.max(1, y + rowH);
+    a = best;
+  }
 
-    const actx = atlas.getContext('2d');
+  return anchors.map((start, i) => {
 
-    for (const s of order) {
+    const end = i + 1 < anchors.length ? anchors[i + 1] : n;
 
-        actx.drawImage(s.bmp, s.sx, s.sy);
+    let duration = 0;
 
-        s.bmp.close && s.bmp.close();
-        s.bmp = null;
-    }
+    for (let k = start; k < end; k++) duration += dur[k];
 
-    // ---- da .sam a righe di pezzi + sequenze
-    const initial = {};
-
-    data.slots.forEach(([slot, , sp]) => { initial[slot] = sp; });
-
-    const map = { ...initial };
-
-    const framesDB = [];
-    const sequences = {};
-    const labels = {};
-    const names = [];
-
-    for (const animName of Object.keys(data.anims)) {
-
-        const key = samAnimKey(animName);
-
-        const cur = { ...map };
-
-        const seq = [];
-
-        for (const f of data.anims[animName].frames) {
-
-            for (const s of (f.swap || [])) {
-
-                cur[s.slot] = s.sprite;
-                map[s.slot] = s.sprite;
-            }
-
-            const pieces = [];
-
-            // nel .sam gli elementi sono dal fondo al davanti; nell'app il primo pezzo e' quello davanti
-            for (let i = f.items.length - 1; i >= 0; i--) {
-
-                const it = f.items[i];
-
-                if (it.x === undefined) continue;
-
-                const sp = sprites[cur[it.slot]];
-
-                if (!sp || sp.sx === undefined) continue;
-
-                const opacity = it.color !== undefined ? (it.color >>> 24) / 255 * 100 : 100;
-
-                if (opacity < 0.5) continue;
-
-                pieces.push({
-                    sam: true,
-                    x: it.x / 20,
-                    y: it.y / 20,
-                    ox: sp.ox,
-                    oy: sp.oy,
-                    rad: (it.rot || 0) / 1000,
-                    mat: blkMatrix(it.blk),
-                    opacity,
-                    flipType: 0,
-                    blendMode: 0,
-                    rotate: 0,
-                    sx: sp.sx,
-                    sy: sp.sy,
-                    w: sp.aw,
-                    h: sp.ah,
-                    pageId: 0
-                });
-            }
-
-            framesDB.push(pieces);
-
-            seq.push({ id: framesDB.length - 1, xOffset: 0, yOffset: 0, duration: f.dur });
-        }
-
-        let k = key;
-
-        while (sequences[k]) k += '_2';
-
-        sequences[k] = seq;
-        labels[k] = animName;
-        names.push(k);
-    }
-
-    return {
-        atlas,
-        framesDB,
-        sequences,
-        order: names,
-        labels,
-        missing,
-        warnings: data.warnings || [],
-        spriteCount: sprites.length
-    };
+    return { ...sequence[start], duration };
+  });
 }

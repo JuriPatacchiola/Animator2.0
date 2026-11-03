@@ -3,7 +3,7 @@ import { initAssembler } from './assembler.js';
 import { createGifWriter, createPaletteBuilder } from './gif.js';
 import { Parser } from './parser.js';
 import { Renderer } from './renderer.js';
-import { buildSamUnit } from './sam.js';
+import { buildSamUnit, reduceSamSequence } from './sam.js';
 import {
     TICK_MS,
     composeFrame,
@@ -71,6 +71,10 @@ const state = {
 
     // true se l'unita' viene da un file .sam (frammenti PNG, niente CGG)
     samMode: false,
+
+    // .sam: sequenze complete del file e nomi mostrati (state.sequences ha quelle ridotte ai frame principali)
+    samFull: {},
+    samLabels: {},
 
     // durata di 1 tick in millisecondi: 1/60 s per i file CGG / CGS; per un .sam si
     // sceglie dal cursore "Velocita' .sam" (anteprima ed esportazioni usano lo stesso valore)
@@ -1239,8 +1243,12 @@ const samSpeedBox = document.getElementById('samSpeed');
 const samEls = {
     range: document.getElementById('samTickRange'),
     num: document.getElementById('samTickMs'),
-    info: document.getElementById('samDuration')
+    info: document.getElementById('samDuration'),
+    reduce: document.getElementById('samReduce'),
+    reduceInfo: document.getElementById('samReduceInfo')
 };
+
+const SAM_REDUCE_KEY = 'animator.samReduce';
 
 const round1 = (v) => Math.round(v * 10) / 10;
 
@@ -1338,12 +1346,19 @@ function setSamMode(unit) {
 
     state.animNames = unit.order;
 
-    state.sequences = { ...unit.sequences, all: [] };
+    state.samFull = unit.sequences;
+    state.samLabels = unit.labels;
 
-    fillAnimOptions([
-        ...unit.order.map(k => [k, `${unit.labels[k]} (${unit.sequences[k].length} frame)`]),
-        ['all', 'Completa (tutte le animazioni)']
-    ]);
+    // frame principali (scelta salvata nel browser)
+    try {
+
+        const saved = localStorage.getItem(SAM_REDUCE_KEY);
+
+        if (saved !== null && [...samEls.reduce.options].some(o => o.value === saved)) samEls.reduce.value = saved;
+
+    } catch (e) { /* ignoro */ }
+
+    applySamReduce();
 
     // niente CGG: l'ombra aggiunta e il blocco a terra non c'entrano
     chkAutoShadow.disabled = true;
@@ -1359,7 +1374,75 @@ function setSamMode(unit) {
     if (state.current !== 'all' && !state.sequences[state.current]) state.current = unit.order[0];
 
     selectAnim.value = state.current;
+
+    updateSamDuration();
 }
+
+// tiene solo i frame principali di ogni animazione (o tutti, se la tolleranza e' 0) e riempie il menu
+function applySamReduce() {
+
+    const tol = Number(samEls.reduce.value) || 0;
+
+    const seqs = {};
+    const parts = [];
+
+    for (const k of state.animNames) {
+
+        const full = state.samFull[k] || [];
+
+        seqs[k] = tol ? reduceSamSequence(full, state.framesDB, tol) : full;
+
+        parts.push(`${state.samLabels[k]} ${full.length}${tol ? ' → ' + seqs[k].length : ''}`);
+    }
+
+    state.sequences = { ...seqs, all: [] };
+
+    rebuildAll();
+
+    fillAnimOptions([
+        ...state.animNames.map(k => [
+            k,
+            `${state.samLabels[k]} (${tol ? state.samFull[k].length + ' → ' : ''}${seqs[k].length} frame)`
+        ]),
+        ['all', 'Completa (tutte le animazioni)']
+    ]);
+
+    selectAnim.value = state.sequences[state.current] ? state.current : state.animNames[0];
+
+    state.current = selectAnim.value;
+
+    samEls.reduceInfo.textContent = tol
+        ? 'Frame: ' + parts.join(' · ')
+        : 'Tutti i frame del file (' + parts.join(' · ') + ')';
+
+    // senza i passaggi intermedi servono i frame creati dal "Morbido": anteprima ed esportazione
+    if (tol) {
+
+        chkSmooth.checked = true;
+        state.smooth = true;
+
+        document.getElementById('exportSmooth').checked = true;
+    }
+
+    updateSamDuration();
+}
+
+samEls.reduce.addEventListener('change', () => {
+
+    try { localStorage.setItem(SAM_REDUCE_KEY, samEls.reduce.value); } catch (e) { /* ignoro */ }
+
+    applySamReduce();
+
+    saveExportPrefs();
+
+    // si riparte dall'inizio: i frame sono cambiati
+    state.frameIndex = 0;
+    state.ticks = 0;
+    state.accum = 0;
+
+    updateTimelineUI();
+    renderCurrentFrame();
+});
 
 
 // ============================================================

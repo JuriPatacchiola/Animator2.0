@@ -102,6 +102,16 @@
                             title="Torna a 8,3 ms (1/120 s)">↺</button>
                     </span>
                     <span id="samDuration" style="font-size:12px"></span>
+                    <span style="margin-top:4px">Frame da usare</span>
+                    <select id="samReduce"
+                        style="width:100%;padding:6px;background:#2a2f3a;color:#fff;border:1px solid #4b5563;border-radius:4px"
+                        title="Il .sam ha moltissimi frame, tanti sono solo passaggi intermedi. 'Frame principali' tiene solo quelli che servono: i passaggi tra l'uno e l'altro li crea il Morbido (movimento fluido), e la durata resta la stessa. I frame dove cambia il disegno restano tutti. Vale per anteprima, GIF, APNG, video e PNG (ZIP).">
+                        <option value="0">Tutti i frame del file</option>
+                        <option value="0.5">Frame principali · fedele</option>
+                        <option value="1" selected>Frame principali · bilanciato (consigliato)</option>
+                        <option value="2">Frame principali · pochi</option>
+                    </select>
+                    <span id="samReduceInfo" style="font-size:11px;line-height:1.4;color:#6b7280"></span>
                 </div>
 
                 <div title="Animazione Completa: quante volte ripetere ogni parte, nell'ordine idle, move, attack. Con 0 la parte viene saltata."
