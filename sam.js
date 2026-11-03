@@ -211,6 +211,61 @@ function blkMatrix(blk) {
 // null, opacity, e il ritaglio dell'atlante sx, sy, w, h.
 // ------------------------------------------------------------
 
+// animazioni che non servono (morte)
+const SKIP_ANIM = /^(dead|death|die|dying)/i;
+
+// impronta di una riga di pezzi: due frame con la stessa impronta si vedono identici
+const rowKey = (pieces) => pieces.map(p => [
+  p.slot, p.sx, p.sy, p.w, p.h, p.x, p.y, p.rad, p.mat ? p.mat.join(' ') : '', p.opacity
+].join(',')).join('|');
+
+/*
+    Pulizia dei frame di un'animazione:
+    - i frame vuoti (i "record di chiusura" del file) non si vedono mai: quelli
+      all'inizio e alla fine si tolgono, quelli in mezzo cedono il tempo al frame prima;
+    - due frame uguali di fila diventano uno solo, con la somma dei tempi (anche
+      l'ultimo uguale al primo, che nel giro si vedrebbe due volte).
+*/
+
+function cleanFrames(frames) {
+
+  let a = 0, z = frames.length;
+
+  while (z > a && !frames[z - 1].pieces.length) z--;
+  while (a < z && !frames[a].pieces.length) a++;
+
+  const out = [];
+
+  for (let i = a; i < z; i++) {
+
+    const f = frames[i];
+    const prev = out[out.length - 1];
+
+    if (!f.pieces.length) {
+
+      if (prev) prev.dur += f.dur;
+
+      continue;
+    }
+
+    if (prev && prev.key === f.key) {
+
+      prev.dur += f.dur;
+
+      continue;
+    }
+
+    out.push({ ...f });
+  }
+
+  if (out.length > 1 && out[0].key === out[out.length - 1].key) {
+
+    out[0].dur += out.pop().dur;
+  }
+
+  return out;
+}
+
 const ATLAS_WIDTH = 2048;
 const PAD = 2;
 
@@ -313,6 +368,7 @@ export async function buildSamUnit(samBuffer, entries, samPath = '') {
   const sequences = {};
   const labels = {};
   const names = [];
+  const skipped = [];
 
   for (const animName of Object.keys(data.anims)) {
 
@@ -320,7 +376,7 @@ export async function buildSamUnit(samBuffer, entries, samPath = '') {
 
     const cur = { ...map };
 
-    const seq = [];
+    const frames = [];
 
     for (const f of data.anims[animName].frames) {
 
@@ -330,14 +386,20 @@ export async function buildSamUnit(samBuffer, entries, samPath = '') {
         map[s.slot] = s.sprite;
       }
 
+      // Ordine di disegno = numero dello slot (il 1 e' il fondo: l'ombra). In alcuni frame
+      // il file elenca gli elementi in un altro ordine e l'ombra finirebbe davanti al resto.
+      const items = f.items
+        .filter(it => it.x !== undefined)
+        .map((it, i) => ({ it, i }))
+        .sort((a, b) => (a.it.slot - b.it.slot) || (a.i - b.i))
+        .map(e => e.it);
+
       const pieces = [];
 
-      // nel .sam gli elementi sono dal fondo al davanti; nell'app il primo pezzo e' quello davanti
-      for (let i = f.items.length - 1; i >= 0; i--) {
+      // gli elementi sono dal fondo al davanti; nell'app il primo pezzo e' quello davanti
+      for (let i = items.length - 1; i >= 0; i--) {
 
-        const it = f.items[i];
-
-        if (it.x === undefined) continue;
+        const it = items[i];
 
         const sp = sprites[cur[it.slot]];
 
@@ -349,6 +411,7 @@ export async function buildSamUnit(samBuffer, entries, samPath = '') {
 
         pieces.push({
           sam: true,
+          slot: it.slot,
           x: it.x / 20,
           y: it.y / 20,
           ox: sp.ox,
@@ -367,10 +430,22 @@ export async function buildSamUnit(samBuffer, entries, samPath = '') {
         });
       }
 
-      framesDB.push(pieces);
+      frames.push({ pieces, dur: Math.max(1, f.dur || 1), key: rowKey(pieces) });
+    }
+
+    // l'animazione di morte non serve: non si offre (ma i suoi cambi di frammento valgono lo stesso)
+    if (SKIP_ANIM.test(animName)) { skipped.push(animName); continue; }
+
+    const seq = [];
+
+    for (const f of cleanFrames(frames)) {
+
+      framesDB.push(f.pieces);
 
       seq.push({ id: framesDB.length - 1, xOffset: 0, yOffset: 0, duration: f.dur });
     }
+
+    if (!seq.length) continue;
 
     let k = key;
 
@@ -389,6 +464,7 @@ export async function buildSamUnit(samBuffer, entries, samPath = '') {
     labels,
     missing,
     warnings: data.warnings || [],
+    skipped,
     spriteCount: sprites.length
   };
 }
@@ -466,7 +542,7 @@ export function reduceSamSequence(sequence, framesDB, tolerance) {
   const rows = sequence.map(f => framesDB[f.id] || []);
 
   // "forma" di un frame: quali ritagli, nello stesso ordine
-  const shape = rows.map(r => r.map(p => `${p.sx},${p.sy},${p.w},${p.h},${p.blendMode || 0}`).join('|'));
+  const shape = rows.map(r => r.map(p => `${p.slot},${p.sx},${p.sy},${p.w},${p.h},${p.blendMode || 0}`).join('|'));
 
   const dur = sequence.map(f => Math.max(1, Number(f.duration) || 1));
 

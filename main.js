@@ -1544,6 +1544,16 @@ btnStart.onclick = async () => {
                         await files[name].text()
                     )
                     : [];
+
+            // il frame finale non deve mai essere vuoto (riga del CGG senza pezzi)
+            const seq = state.sequences[name];
+
+            while (
+                seq.length > 1 &&
+                !(state.framesDBOrig[seq[seq.length - 1].id] || []).some(p => p && p.w > 0 && p.h > 0)
+            ) {
+                seq.pop();
+            }
         }
 
 

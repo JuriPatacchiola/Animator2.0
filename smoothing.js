@@ -221,10 +221,18 @@ export function blendPieces(a, b, t, offA, offB, maxMove = 30) {
 
         for (let m = 0; m < b.length; m++) {
 
-            if (used.has(m) || keysB[m] !== key) continue;
+            if (used.has(m)) continue;
 
-            // formato .sam: un pezzo specchiato non diventa quello non specchiato a meta' strada
-            if (p.sam && handed(p) !== handed(b[m])) continue;
+            if (p.sam) {
+
+                // formato .sam: lo stesso pezzo e' lo stesso slot (anche se cambia il frammento);
+                // uno specchiato non diventa quello non specchiato a meta' strada
+                if (!b[m] || !b[m].sam || b[m].slot !== p.slot || handed(p) !== handed(b[m])) continue;
+
+            } else if (keysB[m] !== key) {
+
+                continue;
+            }
 
             const d = Math.hypot(
                 (Number(b[m].x) || 0) + offB.x - ax,
@@ -237,7 +245,7 @@ export function blendPieces(a, b, t, offA, offB, maxMove = 30) {
             }
         }
 
-        if (found >= 0 && best <= maxMove) {
+        if (found >= 0 && (p.sam || best <= maxMove)) {
 
             used.add(found);
 
@@ -271,6 +279,14 @@ export function blendPieces(a, b, t, offA, offB, maxMove = 30) {
             return;
         }
 
+        // formato .sam: i cambi di pezzi sono netti (come nel gioco), senza dissolvenze
+        if (p.sam) {
+
+            out.push({ ...p, x: ax, y: ay, _order: i });
+
+            return;
+        }
+
         out.push({
             ...p,
             x: ax,
@@ -285,6 +301,9 @@ export function blendPieces(a, b, t, offA, offB, maxMove = 30) {
     b.forEach((q, j) => {
 
         if (used.has(j) || !q || !(q.w > 0) || !(q.h > 0)) return;
+
+        // formato .sam: un pezzo nuovo compare quando comincia il suo frame
+        if (q.sam) return;
 
         out.push({
             ...q,
