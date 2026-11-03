@@ -1257,6 +1257,9 @@ function exportScale() {
 
     if (v === 'view') return Math.max(0.05, Renderer.scale);
 
+    // stessa inquadratura e stessi valori CSS, ma meta' dei pixel per lato (file 4 volte piu' leggero)
+    if (v === 'view-half') return Math.max(0.05, Renderer.scale / 2);
+
     if (v === 'locked' && template) return template.k;
 
     return Number(v) || 2;
@@ -1275,6 +1278,7 @@ const areaEls = {
     fixed: document.getElementById('areaFixed'),
     screen: document.getElementById('areaScreen'),
     extra: document.getElementById('areaExtra'),
+    crop: document.getElementById('areaCrop'),
     w: document.getElementById('areaW'),
     h: document.getElementById('areaH'),
     feet: document.getElementById('areaFeet'),
@@ -1290,6 +1294,7 @@ try {
         areaEls.fixed.checked = !!v.fixed;
         areaEls.screen.checked = !!v.screen;
         if (v.extra !== undefined) areaEls.extra.checked = !!v.extra;
+        if (v.crop !== undefined) areaEls.crop.checked = !!v.crop;
         if (v.w) areaEls.w.value = v.w;
         if (v.h) areaEls.h.value = v.h;
         if (v.feet) areaEls.feet.value = v.feet;
@@ -1327,6 +1332,7 @@ Object.values(areaEls).forEach(el => el.addEventListener('input', () => {
             fixed: areaEls.fixed.checked,
             screen: areaEls.screen.checked,
             extra: areaEls.extra.checked,
+            crop: areaEls.crop.checked,
             w: areaEls.w.value,
             h: areaEls.h.value,
             feet: areaEls.feet.value,
@@ -1582,8 +1588,68 @@ function screenBox() {
     w += w % 2;
     h += h % 2;
 
+    let box = { x: Math.floor(cx - w / 2), y: Math.floor(cy - h / 2), w, h };
+
+    /*
+        Ritaglia intorno al personaggio: lo stesso schermo, ma senza i
+        margini vuoti (un file grande quanto tutto lo schermo, con il
+        personaggio alto 120 pixel, e' lento da riprodurre). I pixel
+        restano quelli di prima; cambiano solo le dimensioni del file e
+        la posizione, che il box "CSS del video" aggiorna da solo.
+    */
+
+    if (areaEls.crop.checked) {
+
+        const shifts = activeShifts();
+
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+
+        for (const name of ['idle', 'move', 'atk']) {
+
+            const seq = state.sequences[name];
+
+            if (!seq || !seq.length) continue;
+
+            const b = sequenceBounds(seq, state.framesDB, shifts);
+
+            x0 = Math.min(x0, b.x);
+            y0 = Math.min(y0, b.y);
+            x1 = Math.max(x1, b.x + b.w);
+            y1 = Math.max(y1, b.y + b.h);
+        }
+
+        // solo la parte che si vedrebbe comunque nell'esportazione intera
+        x0 = Math.max(x0, box.x);
+        y0 = Math.max(y0, box.y);
+        x1 = Math.min(x1, box.x + box.w);
+        y1 = Math.min(y1, box.y + box.h);
+
+        if (x1 > x0 && y1 > y0) {
+
+            /*
+                Si ritaglia sulla griglia dei PIXEL DI USCITA dell'esportazione
+                intera: cosi' ogni pixel del ritaglio e' identico a quello del
+                file grande (nessuno slittamento di mezzo pixel).
+            */
+
+            const kk = exportScale();
+
+            const ix0 = Math.floor((x0 - box.x) * kk);
+            const iy0 = Math.floor((y0 - box.y) * kk);
+
+            let iw = Math.ceil((x1 - box.x) * kk) - ix0;
+            let ih = Math.ceil((y1 - box.y) * kk) - iy0;
+
+            // misure pari: i video non amano i pixel dispari
+            iw += iw % 2;
+            ih += ih % 2;
+
+            box = { x: box.x + ix0 / kk, y: box.y + iy0 / kk, w: iw / kk, h: ih / kk };
+        }
+    }
+
     return {
-        x: Math.floor(cx - w / 2), y: Math.floor(cy - h / 2), w, h,
+        ...box,
         view: { x: vx0, y: vy0, w: vw, h: vh }
     };
 }
@@ -1615,7 +1681,11 @@ function updateExportInfo() {
     const W = Math.round(box.w * scale);
     const H = Math.round(box.h * scale);
 
-    el.innerText = `Uscita: ${W}×${H} px` + (Math.max(W, H) > 4096 ? ' (troppo grande!)' : '');
+    el.innerText = `Uscita: ${W}×${H} px`
+        + (Math.max(W, H) > 4096 ? ' (troppo grande!)' : '')
+        + (W * H > 2_000_000 && Math.max(W, H) <= 4096
+            ? ' ⚠ molto grande: la GIF / il video possono andare a scatti. Spunta «Ritaglia intorno al personaggio» o scegli l\'ingrandimento «Metà dello schermo».'
+            : '');
 
     /*
         Valori CSS per metterlo nel tuo progetto: il contenitore ha le
@@ -1692,6 +1762,8 @@ try {
     if (v && v.scale) document.getElementById('gifScale').value = v.scale;
     if (v && v.fps) document.getElementById('gifFps').value = v.fps;
 
+    if (v && v.smooth === false) document.getElementById('exportSmooth').checked = false;
+
     if (v && /^#[0-9a-f]{6}$/i.test(v.bg || '')) bgEls.color.value = v.bg;
 
     if (v && Number.isFinite(Number(v.bgAlpha)) && v.bgAlpha !== null && v.bgAlpha !== '') {
@@ -1713,6 +1785,7 @@ function saveExportPrefs() {
         localStorage.setItem(EXPORT_KEY, JSON.stringify({
             scale: document.getElementById('gifScale').value,
             fps: document.getElementById('gifFps').value,
+            smooth: document.getElementById('exportSmooth').checked,
             bg: bgEls.color.value,
             bgAlpha: bgEls.num.value,
             bgAll: bgEls.all.checked
@@ -1721,7 +1794,7 @@ function saveExportPrefs() {
     } catch (e) { /* ignoro */ }
 }
 
-['gifScale', 'gifFps'].forEach(id => document.getElementById(id).addEventListener('change', () => {
+['gifScale', 'gifFps', 'exportSmooth'].forEach(id => document.getElementById(id).addEventListener('change', () => {
 
     saveExportPrefs();
 
@@ -1872,7 +1945,10 @@ function exportPlan(scale) {
     // durata del loop in centesimi di secondo (unita' di GIF e APNG)
     const totalCs = totalTicks * 100 / 60;
 
-    return { sequence, shifts, box, scale, width, height, totalTicks, totalCs };
+    // frame intermedi: si sceglie qui, a prescindere dal "Morbido" dello schermo
+    const smooth = document.getElementById('exportSmooth').checked;
+
+    return { sequence, shifts, box, scale, width, height, totalTicks, totalCs, smooth };
 }
 
 function planFrames(plan, fps) {
@@ -1906,7 +1982,7 @@ function framePieces(plan, k) {
         shifts: plan.shifts,
         index,
         t,
-        smooth: state.smooth
+        smooth: plan.smooth
     }) || [];
 }
 
@@ -2177,7 +2253,6 @@ btnGif.onclick = () => runExport(btnGif, async (o) => {
 
     // 100% = sfondo pieno, 0% = trasparente, in mezzo = puntini (la GIF non ha mezze trasparenze)
     const mode = o.bgAlpha >= 1 ? 'gif' : (o.bgAlpha <= 0 ? 'gif-mask' : 'gif-alpha');
-    const transparent = o.bgAlpha < 1;
 
     const canvas = document.createElement('canvas');
     const maskCanvas = document.createElement('canvas');
@@ -2198,10 +2273,8 @@ btnGif.onclick = () => runExport(btnGif, async (o) => {
         }
     }
 
-    const gw = createGifWriter(plan.width, plan.height, {
-        ...pb.finish(transparent),
-        transparent
-    });
+    // l'indice 0 della palette e' sempre "trasparente": serve ai fotogrammi ridotti
+    const gw = createGifWriter(plan.width, plan.height, pb.finish(true));
 
     for (let k = 0; k < plan.n; k++) {
 

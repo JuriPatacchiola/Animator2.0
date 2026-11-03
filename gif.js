@@ -3,7 +3,8 @@
 //
 // - UNA SOLA palette globale per tutti i frame (niente sfarfallio di
 //   colori tra un fotogramma e l'altro, che si vedrebbe come "scatto")
-// - trasparenza a 1 bit (opzionale), loop infinito
+// - trasparenza a 1 bit (indice 0 della palette), loop infinito
+// - fotogrammi ridotti al rettangolo che cambia (riproduzione leggera)
 // - nessun dithering (il rumore cambierebbe da un frame all'altro)
 // ============================================================
 
@@ -301,9 +302,27 @@ export function createPaletteBuilder() {
 // addFrame(rgba, delay) codifica subito il fotogramma e tiene solo i
 // byte compressi (in un Blob: il browser puo' anche parcheggiarli su
 // disco). finish() restituisce il file finale come Blob.
+//
+// LEGGERA DA RIPRODURRE: i browser, a ogni fotogramma, decodificano
+// l'immagine e la rimettono insieme al fotogramma precedente. Se ogni
+// fotogramma e' grande quanto tutta l'area (es. 3594x1858 pixel con il
+// personaggio alto 120) la riproduzione rallenta e scatta. Quindi ogni
+// fotogramma contiene solo il RETTANGOLO che cambia davvero:
+//
+// - se nessun pixel torna da "pieno" a "trasparente", il fotogramma
+//   contiene solo i pixel cambiati (gli altri sono "trasparenti" =
+//   lascia quello che c'e'), con smaltimento 1 (non cancellare);
+// - altrimenti il fotogramma precedente viene cancellato (smaltimento 2)
+//   e il nuovo contiene tutti i suoi pixel non trasparenti;
+// - un fotogramma identico al precedente non viene scritto: si allunga
+//   la durata di quello prima (es. animazioni "a scatti" a 12 fps);
+//
+// Il risultato a schermo e' IDENTICO, ma il file e il lavoro del browser
+// diventano molto piu' piccoli. L'indice 0 della palette e' sempre
+// "trasparente" (la palette ha quindi al massimo 255 colori).
 // ------------------------------------------------------------
 
-export function createGifWriter(width, height, { palette, lut, transparent = false, loop = 0 }) {
+export function createGifWriter(width, height, { palette, lut, loop = 0 }) {
 
     const parts = [];
 
@@ -324,35 +343,95 @@ export function createGifWriter(width, height, { palette, lut, transparent = fal
 
     parts.push(head.result());
 
-    const indices = new Uint8Array(width * height);
+    const total = width * height;
 
-    function addFrame(data, delay = 4) {
+    let prev = null;               // indici (0 = trasparente) di cio' che si vede dopo l'ultimo fotogramma
+    let cur = new Uint8Array(total);
+    let pending = null;            // ultimo fotogramma, ancora da scrivere (potrebbe allungarsi o cambiare smaltimento)
 
-        for (let p = 0, i = 0; p < data.length; p += 4, i++) {
+    // rettangolo che contiene i pixel per cui test(i) e' vero
+    function bounds(test) {
 
-            indices[i] = data[p + 3] < 128
-                ? 0
-                : lut[((data[p] >> 3) << 10) | ((data[p + 1] >> 3) << 5) | (data[p + 2] >> 3)];
+        let x0 = width, y0 = height, x1 = -1, y1 = -1;
+
+        for (let y = 0, i = 0; y < height; y++) {
+
+            let rowHit = false;
+
+            for (let x = 0; x < width; x++, i++) {
+
+                if (test(i)) {
+
+                    rowHit = true;
+
+                    if (x < x0) x0 = x;
+                    if (x > x1) x1 = x;
+                }
+            }
+
+            if (rowHit) {
+                if (y < y0) y0 = y;
+                y1 = y;
+            }
         }
+
+        return x1 < 0 ? null : { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
+    }
+
+    // pixel di un rettangolo; con "base" i pixel uguali a base restano 0 (= lascia com'e')
+    function cut(src, r, base) {
+
+        const out = new Uint8Array(r.w * r.h);
+
+        for (let y = 0, o = 0; y < r.h; y++) {
+
+            let i = (r.y + y) * width + r.x;
+
+            for (let x = 0; x < r.w; x++, i++, o++) {
+                out[o] = base && base[i] === src[i] ? 0 : src[i];
+            }
+        }
+
+        return out;
+    }
+
+    const union = (a, b) => {
+
+        if (!a) return b;
+        if (!b) return a;
+
+        const x0 = Math.min(a.x, b.x), y0 = Math.min(a.y, b.y);
+        const x1 = Math.max(a.x + a.w, b.x + b.w), y1 = Math.max(a.y + a.h, b.y + b.h);
+
+        return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+    };
+
+    const EMPTY = { x: 0, y: 0, w: 1, h: 1 };
+
+    function flush() {
+
+        if (!pending) return;
+
+        const { rect, pix, delay, disposal } = pending;
 
         const w = new ByteWriter();
 
-        // Graphic Control Extension
+        // Graphic Control Extension (indice 0 = trasparente)
         w.byte(0x21); w.byte(0xF9); w.byte(4);
-        w.byte((transparent ? 2 : 1) << 2 | (transparent ? 1 : 0));   // disposal: 2 = ripristina sfondo, 1 = lascia
+        w.byte((disposal << 2) | 1);
         w.word(Math.max(2, delay || 4));
-        w.byte(0);                                                      // indice trasparente
+        w.byte(0);
         w.byte(0);
 
         // Image Descriptor
         w.byte(0x2C);
-        w.word(0); w.word(0);
-        w.word(width); w.word(height);
+        w.word(rect.x); w.word(rect.y);
+        w.word(rect.w); w.word(rect.h);
         w.byte(0);
 
         w.byte(8);                                                      // min code size
 
-        const lzw = lzwEncode(indices, 8);
+        const lzw = lzwEncode(pix, 8);
 
         for (let i = 0; i < lzw.length; i += 255) {
 
@@ -365,10 +444,103 @@ export function createGifWriter(width, height, { palette, lut, transparent = fal
         w.byte(0);
 
         parts.push(new Blob([w.result()]));
+
+        pending = null;
+    }
+
+    // dopo questo fotogramma il precedente va cancellato: deve coprire TUTTO cio' che e' visibile
+    function makeClearing() {
+
+        const r = union(pending.rect, bounds(i => prev[i] !== 0)) || EMPTY;
+
+        pending.rect = r;
+        pending.pix = cut(prev, r, null);
+        pending.disposal = 2;
+    }
+
+    function addFrame(data, delay = 4) {
+
+        for (let p = 0, i = 0; p < data.length; p += 4, i++) {
+
+            cur[i] = data[p + 3] < 128
+                ? 0
+                : lut[((data[p] >> 3) << 10) | ((data[p + 1] >> 3) << 5) | (data[p + 2] >> 3)];
+        }
+
+        if (!prev) {
+
+            const rect = bounds(i => cur[i] !== 0) || EMPTY;
+
+            pending = { rect, pix: cut(cur, rect, null), delay, disposal: 1 };
+
+            prev = cur;
+            cur = new Uint8Array(total);
+
+            return;
+        }
+
+        // fotogramma uguale al precedente: dura di piu', niente da scrivere
+        const changed = bounds(i => cur[i] !== prev[i]);
+
+        if (!changed) {
+
+            pending.delay += delay;
+
+            return;
+        }
+
+        // basta aggiungere pixel? (nessun "pieno" diventa "trasparente")
+        let keep = true;
+
+        for (let y = changed.y; y < changed.y + changed.h && keep; y++) {
+
+            let i = y * width + changed.x;
+
+            for (let x = 0; x < changed.w; x++, i++) {
+
+                if (cur[i] === 0 && prev[i] !== 0) { keep = false; break; }
+            }
+        }
+
+        let next;
+
+        if (keep) {
+
+            pending.disposal = 1;
+
+            next = { rect: changed, pix: cut(cur, changed, prev), delay, disposal: 1 };
+
+        } else {
+
+            makeClearing();
+
+            const rect = bounds(i => cur[i] !== 0) || EMPTY;
+
+            next = { rect, pix: cut(cur, rect, null), delay, disposal: 1 };
+        }
+
+        flush();
+
+        pending = next;
+
+        const t = prev;
+
+        prev = cur;
+        cur = t;
     }
 
     function finish() {
+
+        // dopo l'ultimo fotogramma si ricomincia: lo schermo deve essere pulito
+        if (pending) {
+
+            makeClearing();
+
+            flush();
+        }
+
         parts.push(new Uint8Array([0x3B]));
+
         return new Blob(parts, { type: 'image/gif' });
     }
 
@@ -384,7 +556,6 @@ export function createGifWriter(width, height, { palette, lut, transparent = fal
 
 export async function encodeGIF(frames, width, height, options = {}) {
 
-    const transparent = !!options.transparent;
     const delays = options.delays || frames.map(() => 4);
 
     if (!frames.length) throw new Error('Nessun frame da codificare.');
@@ -392,7 +563,7 @@ export async function encodeGIF(frames, width, height, options = {}) {
     const pb = createPaletteBuilder();
     frames.forEach(f => pb.add(f));
 
-    const gw = createGifWriter(width, height, { ...pb.finish(transparent), transparent, loop: options.loop || 0 });
+    const gw = createGifWriter(width, height, { ...pb.finish(true), loop: options.loop || 0 });
     frames.forEach((f, i) => gw.addFrame(f, delays[i]));
 
     return new Uint8Array(await gw.finish().arrayBuffer());

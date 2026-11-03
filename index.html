@@ -117,14 +117,19 @@
                         <label for="gifFps">Esporta: fotogrammi al secondo</label>
                         <select id="gifFps">
                             <option value="50" selected>50 (molto fluida)</option>
-                            <option value="30">30</option>
-                            <option value="25">25</option>
+                            <option value="33.33">33 (regolare)</option>
+                            <option value="25">25 (regolare)</option>
                         </select>
                     </div>
+                    <label
+                        title="Aggiunge i fotogrammi intermedi tra un frame del CGS e il successivo: l'animazione scorre fluida invece che a scatti (es. 10 immagini in 0,8 s). Tolto, l'esportazione ripete esattamente i frame del file. Vale per GIF, APNG e video; il PNG (ZIP) ha sempre i frame esatti.">
+                        <input type="checkbox" id="exportSmooth" checked> Esporta fluido (fotogrammi intermedi)
+                    </label>
                     <div class="select-wrapper">
                         <label for="gifScale">Esporta: ingrandimento (6× e più per video grandi)</label>
                         <select id="gifScale">
                             <option value="view" selected>Come lo zoom dello schermo (consigliato)</option>
+                            <option value="view-half">Metà dello zoom dello schermo (file 4× più leggero)</option>
                             <option value="locked">Zoom del modello (bloccato)</option>
                             <option value="1">1×</option>
                             <option value="2">2×</option>
@@ -151,6 +156,10 @@
                         <label
                             title="Esporta esattamente quello che vedi nel riquadro scuro, con lo zoom e la posizione di adesso: sposta e zooma finche' il personaggio sta come vuoi. Ha la precedenza sull'area fissa.">
                             <input type="checkbox" id="areaScreen"> Come lo schermo (stesso zoom e posizione)
+                        </label>
+                        <label
+                            title="Con 'Come lo schermo' il file e' grande quanto tutto lo schermo (es. 3594x1858 px) anche se il personaggio e' piccolo: il browser fa fatica a riprodurlo e va a scatti. Qui si toglie il vuoto attorno al personaggio: i pixel sono gli stessi, il file e' molto piu' piccolo e leggero. Il CSS qui sotto si aggiorna da solo (cambia per ogni unita').">
+                            <input type="checkbox" id="areaCrop"> Ritaglia intorno al personaggio (file leggero)
                         </label>
                         <button id="anchorFromScreen" class="secondary-btn"
                             title="Prende la posizione X / Y da dove hai messo il personaggio nell'area di lavoro (per esempio al centro).">
