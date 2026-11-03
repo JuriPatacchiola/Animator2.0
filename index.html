@@ -140,6 +140,13 @@
                             <option value="10">10×</option>
                         </select>
                     </div>
+                    <label
+                        title="La GIF si decodifica sull'intera tela a ogni fotogramma: il costo cresce con i pixel (circa 3 ms per megapixel), non con il contenuto. Oltre ~4-6 megapixel a 50 fps rallenta e scatta. Con il limite attivo, se l'area e' piu' grande l'ingrandimento si riduce da solo (stessa inquadratura e stesso CSS, meno pixel). Sotto il limite non cambia niente.">
+                        <input type="checkbox" id="gifLimit" checked> GIF fluida: massimo
+                        <input type="number" id="gifLimitMp" value="3" min="0.5" max="30" step="0.5"
+                            style="width:56px;padding:4px;background:#2a2f3a;color:#fff;border:1px solid #4b5563;border-radius:4px">
+                        megapixel
+                    </label>
                     <div style="display:flex;flex-direction:column;gap:6px;font-size:13px">
                         <div style="background:#12151b;border:1px solid #2e3340;border-radius:6px;padding:8px;display:flex;flex-direction:column;gap:6px"
                             title="Fissa UNA VOLTA zoom, posizione e area: poi ogni unita' esce con la stessa dimensione, lo stesso zoom e il personaggio nello stesso punto, anche se cambi zoom o sposti la vista.">
@@ -230,9 +237,11 @@
                             <input type="checkbox" id="gifSoft" checked> GIF: ombra morbida a puntini (come il WebM)
                         </label>
                         <div style="font-size:11px;color:#9ca3af;line-height:1.4">
-                            0% = trasparente · 100% = pieno. Vale per <b>GIF</b> e <b>Video WebM</b>
-                            (con "Video: sfondo trasparente" tolto). Nella GIF le mezze opacità sono
-                            a puntini.
+                            0% = sfondo trasparente · 100% = sfondo pieno. Vale per <b>GIF</b> e
+                            <b>Video WebM</b> (con "Video: sfondo trasparente" tolto).<br>
+                            <b>Per la GIF con solo l'ombra morbida:</b> opacità <b>0%</b> e casella
+                            "ombra morbida" accesa: i puntini compaiono solo su ombra e bagliori.
+                            Con valori intermedi i puntini coprono <b>tutta l'area</b>.
                         </div>
                         <label
                             title="APNG e PNG di solito sono trasparenti. Spunta per dar loro lo stesso sfondo (colore + opacità) scelto qui sopra.">

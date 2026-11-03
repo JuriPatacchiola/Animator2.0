@@ -1681,11 +1681,15 @@ function updateExportInfo() {
     const W = Math.round(box.w * scale);
     const H = Math.round(box.h * scale);
 
+    const eff = limitScale(box, scale, gifMaxMp());
+
     el.innerText = `Uscita: ${W}×${H} px`
         + (Math.max(W, H) > 4096 ? ' (troppo grande!)' : '')
-        + (W * H > 2_000_000 && Math.max(W, H) <= 4096
-            ? ' ⚠ molto grande: la GIF / il video possono andare a scatti. Spunta «Ritaglia intorno al personaggio» o scegli l\'ingrandimento «Metà dello schermo».'
-            : '');
+        + (eff < scale
+            ? ` · la GIF esce ridotta a ${Math.max(1, Math.round(box.w * eff))}×${Math.max(1, Math.round(box.h * eff))} px, per restare fluida`
+            : (W * H > 2_000_000 && Math.max(W, H) <= 4096
+                ? ' ⚠ molto grande: la GIF / il video possono andare a scatti. Spunta «Ritaglia intorno al personaggio», scegli «Metà dello schermo» o attiva il limite dei megapixel.'
+                : ''));
 
     /*
         Valori CSS per metterlo nel tuo progetto: il contenitore ha le
@@ -1764,6 +1768,9 @@ try {
 
     if (v && v.smooth === false) document.getElementById('exportSmooth').checked = false;
 
+    if (v && v.gifLimit === false) document.getElementById('gifLimit').checked = false;
+    if (v && Number(v.gifLimitMp) > 0) document.getElementById('gifLimitMp').value = v.gifLimitMp;
+
     if (v && /^#[0-9a-f]{6}$/i.test(v.bg || '')) bgEls.color.value = v.bg;
 
     if (v && Number.isFinite(Number(v.bgAlpha)) && v.bgAlpha !== null && v.bgAlpha !== '') {
@@ -1788,6 +1795,8 @@ function saveExportPrefs() {
             scale: document.getElementById('gifScale').value,
             fps: document.getElementById('gifFps').value,
             smooth: document.getElementById('exportSmooth').checked,
+            gifLimit: document.getElementById('gifLimit').checked,
+            gifLimitMp: document.getElementById('gifLimitMp').value,
             bg: bgEls.color.value,
             bgAlpha: bgEls.num.value,
             bgAll: bgEls.all.checked,
@@ -1797,7 +1806,7 @@ function saveExportPrefs() {
     } catch (e) { /* ignoro */ }
 }
 
-['gifScale', 'gifFps', 'exportSmooth'].forEach(id => document.getElementById(id).addEventListener('change', () => {
+['gifScale', 'gifFps', 'exportSmooth', 'gifLimit', 'gifLimitMp'].forEach(id => document.getElementById(id).addEventListener('change', () => {
 
     saveExportPrefs();
 
@@ -1929,13 +1938,44 @@ function exportBox(shifts) {
       'alpha'    trasparenza vera (APNG / video trasparente)
 */
 
-function exportPlan(scale) {
+/*
+    GIF FLUIDA ANCHE CON AREE ENORMI
+
+    Il browser, a ogni fotogramma, decodifica la GIF sull'INTERA tela, anche
+    se cambia solo un angolo: il costo e' proporzionale ai pixel della tela
+    (circa 3 ms per megapixel, misurato), non al contenuto. A 50 fps ne
+    hai 20 ms per fotogramma: oltre ~4-6 megapixel la GIF rallenta e scatta.
+    Con il limite attivo, se la tela supera i megapixel scelti si riduce
+    l'ingrandimento (stessa inquadratura, stessi valori CSS, meno pixel).
+*/
+
+function gifMaxMp() {
+
+    if (!document.getElementById('gifLimit').checked) return 0;
+
+    const v = Number(document.getElementById('gifLimitMp').value);
+
+    return Number.isFinite(v) && v > 0 ? Math.min(30, v) : 3;
+}
+
+function limitScale(box, scale, maxMp) {
+
+    if (!maxMp || !(box.w > 0) || !(box.h > 0)) return scale;
+
+    return box.w * box.h * scale * scale > maxMp * 1e6
+        ? Math.sqrt(maxMp * 1e6 / (box.w * box.h))
+        : scale;
+}
+
+function exportPlan(scale, maxMp = 0) {
 
     const sequence = state.sequences[state.current];
 
     const shifts = activeShifts();
 
     const box = exportBox(shifts);
+
+    scale = limitScale(box, scale, maxMp);
 
     const width = Math.max(1, Math.round(box.w * scale));
     const height = Math.max(1, Math.round(box.h * scale));
@@ -2228,6 +2268,7 @@ async function runExport(button, job) {
             fps: Number(document.getElementById('gifFps').value) || 50,
             scale: exportScale(),
             ...backgroundOptions(),
+            gifMaxMp: gifMaxMp(),
             onStatus
         });
 
@@ -2261,7 +2302,7 @@ async function runExport(button, job) {
 
 btnGif.onclick = () => runExport(btnGif, async (o) => {
 
-    const plan = planFrames(exportPlan(o.scale), o.fps);
+    const plan = planFrames(exportPlan(o.scale, o.gifMaxMp), o.fps);
 
     // 100% = sfondo pieno, 0% = trasparente, in mezzo = puntini (la GIF non ha mezze trasparenze)
     // sfondo trasparente: ombra e bagliori semitrasparenti a puntini (come il WebM) oppure tutto o niente (come prima)
