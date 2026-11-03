@@ -190,6 +190,33 @@ function handed(p) {
 }
 
 /*
+    Formato .sam: ogni posa e' fatta di frammenti propri (a ogni posa cambiano quasi
+    tutti i disegni), quindi tra due pose non c'e' niente da muovere: i pezzi diversi
+    si possono solo tenere fermi o dissolvere. "samSoft" e' la parte finale del frame
+    in cui avviene la dissolvenza (0 = taglio netto, come nel file; 1 = per tutto il
+    frame). I pezzi che sono lo stesso disegno in entrambe le pose si muovono sempre
+    in modo continuo.
+*/
+
+let samSoft = 0.3;
+
+export function setSamSoft(v) {
+
+    const n = Number(v);
+
+    samSoft = Number.isFinite(n) ? Math.min(1, Math.max(0, n)) : 0.3;
+}
+
+function samFade(t) {
+
+    if (samSoft <= 0) return t >= 1 ? 1 : 0;
+
+    if (samSoft >= 1) return t;
+
+    return Math.min(1, Math.max(0, (t - (1 - samSoft)) / samSoft));
+}
+
+/*
     Passaggio morbido tra due frame (t da 0 a 1):
 
     - un pezzo presente in entrambi (stesso ritaglio) si muove, ruota e
@@ -221,18 +248,10 @@ export function blendPieces(a, b, t, offA, offB, maxMove = 30) {
 
         for (let m = 0; m < b.length; m++) {
 
-            if (used.has(m)) continue;
+            if (used.has(m) || keysB[m] !== key) continue;
 
-            if (p.sam) {
-
-                // formato .sam: lo stesso pezzo e' lo stesso slot (anche se cambia il frammento);
-                // uno specchiato non diventa quello non specchiato a meta' strada
-                if (!b[m] || !b[m].sam || b[m].slot !== p.slot || handed(p) !== handed(b[m])) continue;
-
-            } else if (keysB[m] !== key) {
-
-                continue;
-            }
+            // formato .sam: un pezzo specchiato non diventa quello non specchiato a meta' strada
+            if (p.sam && handed(p) !== handed(b[m])) continue;
 
             const d = Math.hypot(
                 (Number(b[m].x) || 0) + offB.x - ax,
@@ -245,7 +264,7 @@ export function blendPieces(a, b, t, offA, offB, maxMove = 30) {
             }
         }
 
-        if (found >= 0 && (p.sam || best <= maxMove)) {
+        if (found >= 0 && best <= maxMove) {
 
             used.add(found);
 
@@ -279,21 +298,16 @@ export function blendPieces(a, b, t, offA, offB, maxMove = 30) {
             return;
         }
 
-        // formato .sam: i cambi di pezzi sono netti (come nel gioco), senza dissolvenze
-        if (p.sam) {
-
-            out.push({ ...p, x: ax, y: ay, _order: i });
-
-            return;
-        }
+        // formato .sam: la dissolvenza avviene solo alla fine del frame (vedi samSoft)
+        const ta = p.sam ? samFade(t) : t;
 
         out.push({
             ...p,
             x: ax,
             y: ay,
             opacity: i === 0
-                ? (t < 0.5 ? opacityOf(p) : 0)
-                : opacityOf(p) * (1 - t),
+                ? (ta < 0.5 ? opacityOf(p) : 0)
+                : opacityOf(p) * (1 - ta),
             _order: i
         });
     });
@@ -302,16 +316,15 @@ export function blendPieces(a, b, t, offA, offB, maxMove = 30) {
 
         if (used.has(j) || !q || !(q.w > 0) || !(q.h > 0)) return;
 
-        // formato .sam: un pezzo nuovo compare quando comincia il suo frame
-        if (q.sam) return;
+        const tb = q.sam ? samFade(t) : t;
 
         out.push({
             ...q,
             x: (Number(q.x) || 0) + offB.x,
             y: (Number(q.y) || 0) + offB.y,
             opacity: j === 0
-                ? (t >= 0.5 ? opacityOf(q) : 0)
-                : opacityOf(q) * t,
+                ? (tb >= 0.5 ? opacityOf(q) : 0)
+                : opacityOf(q) * tb,
             _order: j
         });
     });

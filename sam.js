@@ -216,7 +216,7 @@ const SKIP_ANIM = /^(dead|death|die|dying)/i;
 
 // impronta di una riga di pezzi: due frame con la stessa impronta si vedono identici
 const rowKey = (pieces) => pieces.map(p => [
-  p.slot, p.sx, p.sy, p.w, p.h, p.x, p.y, p.rad, p.mat ? p.mat.join(' ') : '', p.opacity
+  p.sk, p.sx, p.sy, p.w, p.h, p.x, p.y, p.rad, p.mat ? p.mat.join(' ') : '', p.opacity
 ].join(',')).join('|');
 
 /*
@@ -264,6 +264,38 @@ function cleanFrames(frames) {
   }
 
   return out;
+}
+
+// numero + posizione dello stesso numero nell'elenco: "13#0", "13#1"
+function keyed(list) {
+
+  const seen = {};
+
+  return list.map(e => {
+
+    seen[e.slot] = seen[e.slot] === undefined ? 0 : seen[e.slot] + 1;
+
+    return { ...e, sk: e.slot + '#' + seen[e.slot] };
+  });
+}
+
+/*
+    Punto dei piedi: il centro dell'ombra (il pezzo piu' in fondo, largo e basso)
+    nel primo frame. Restituisce null se non si trova.
+*/
+
+function footPoint(framesDB, seq) {
+
+  if (!seq || !seq.length) return null;
+
+  const row = framesDB[seq[0].id] || [];
+
+  // il pezzo in fondo (l'ultimo della riga) e' l'ombra se e' largo e basso
+  const shadow = row[row.length - 1];
+
+  if (!shadow || !(shadow.w > shadow.h)) return null;
+
+  return { x: shadow.x + shadow.ox + shadow.w / 2, y: shadow.y + shadow.oy + shadow.h / 2 };
 }
 
 const ATLAS_WIDTH = 2048;
@@ -358,9 +390,12 @@ export async function buildSamUnit(samBuffer, entries, samPath = '') {
   }
 
   // ---- da .sam a righe di pezzi + sequenze
+  //
+  // Uno slot e' identificato da numero + posizione (se lo stesso numero compare
+  // due volte in un elenco, la prima e la seconda volta sono pezzi diversi).
   const initial = {};
 
-  data.slots.forEach(([slot, , sp]) => { initial[slot] = sp; });
+  keyed(data.slots.map(([slot, , sprite]) => ({ slot, sprite }))).forEach(e => { initial[e.sk] = e.sprite; });
 
   const map = { ...initial };
 
@@ -370,29 +405,93 @@ export async function buildSamUnit(samBuffer, entries, samPath = '') {
   const names = [];
   const skipped = [];
 
+  // i frame del file sono (quasi tutti) in ordine di slot? Allora l'ordine di disegno e' quello degli slot
+  let ordered = 0, total = 0;
+
+  for (const a of Object.values(data.anims)) {
+
+    for (const f of a.frames) {
+
+      const sl = f.items.filter(it => it.x !== undefined).map(it => it.slot);
+
+      if (sl.length < 2) continue;
+
+      total++;
+
+      if (sl.every((v, i) => i === 0 || sl[i - 1] <= v)) ordered++;
+    }
+  }
+
+  const zBySlot = total === 0 || ordered >= total * 0.5;
+
   for (const animName of Object.keys(data.anims)) {
 
     const key = samAnimKey(animName);
 
     const cur = { ...map };
 
-    const frames = [];
+    // ---- 1. un record per frame, con i frammenti che valgono in quel momento
+    const recs = data.anims[animName].frames.map(f => {
 
-    for (const f of data.anims[animName].frames) {
+      for (const s of keyed(f.swap || [])) {
 
-      for (const s of (f.swap || [])) {
-
-        cur[s.slot] = s.sprite;
-        map[s.slot] = s.sprite;
+        cur[s.sk] = s.sprite;
+        map[s.sk] = s.sprite;
       }
 
-      // Ordine di disegno = numero dello slot (il 1 e' il fondo: l'ombra). In alcuni frame
-      // il file elenca gli elementi in un altro ordine e l'ombra finirebbe davanti al resto.
-      const items = f.items
-        .filter(it => it.x !== undefined)
-        .map((it, i) => ({ it, i }))
-        .sort((a, b) => (a.it.slot - b.it.slot) || (a.i - b.i))
-        .map(e => e.it);
+      return {
+        f,
+        dur: Math.max(1, f.dur || 1),
+        sprites: { ...cur },
+        items: keyed(f.items.filter(it => it.x !== undefined))
+      };
+    });
+
+    // ---- 2. nei frame con cambio di frammento il file non rielenca i pezzi che cambiano
+    // solo disegno (es. il cerchio sotto l'unita'): sparirebbero per un frame. Quei pezzi
+    // stanno dove sono nel frame dopo (o dove erano prima, se dopo non ci sono).
+    recs.forEach((rec, i) => {
+
+      if (!rec.f.swap || !rec.items.length) return;
+
+      const near = (step) => {
+
+        for (let j = i + step; j >= 0 && j < recs.length; j += step) {
+
+          if (recs[j].items.length) return new Map(recs[j].items.map(e => [e.sk, e]));
+        }
+
+        return new Map();
+      };
+
+      const prev = near(-1);
+      const next = near(1);
+
+      const have = new Set(rec.items.map(e => e.sk));
+      const hid = new Set(rec.f.hide || []);
+
+      for (const sw of keyed(rec.f.swap)) {
+
+        if (have.has(sw.sk) || hid.has(sw.slot)) continue;
+
+        const q = next.get(sw.sk) || prev.get(sw.sk);
+
+        if (q) rec.items.push(q);
+      }
+    });
+
+    // ---- 3. righe di pezzi
+    const frames = recs.map((rec) => {
+
+      // Ordine di disegno = numero dello slot (il 1 e' il fondo: l'ombra). I frame dove qualcosa
+      // cambia elencano prima i pezzi che cambiano, e l'ombra finirebbe davanti al resto.
+      // (Se in un file i frame normali non sono in ordine di slot, si tiene l'ordine del file.)
+      const items = zBySlot
+        ? rec.items
+          .map((it, i) => ({ it, i }))
+          .sort((a, b) => (a.it.slot - b.it.slot) || (a.i - b.i))
+          .map(e => e.it)
+        : rec.items;
 
       const pieces = [];
 
@@ -401,7 +500,7 @@ export async function buildSamUnit(samBuffer, entries, samPath = '') {
 
         const it = items[i];
 
-        const sp = sprites[cur[it.slot]];
+        const sp = sprites[rec.sprites[it.sk]];
 
         if (!sp || sp.sx === undefined) continue;
 
@@ -412,6 +511,7 @@ export async function buildSamUnit(samBuffer, entries, samPath = '') {
         pieces.push({
           sam: true,
           slot: it.slot,
+          sk: it.sk,
           x: it.x / 20,
           y: it.y / 20,
           ox: sp.ox,
@@ -430,8 +530,8 @@ export async function buildSamUnit(samBuffer, entries, samPath = '') {
         });
       }
 
-      frames.push({ pieces, dur: Math.max(1, f.dur || 1), key: rowKey(pieces) });
-    }
+      return { pieces, dur: rec.dur, key: rowKey(pieces) };
+    });
 
     // l'animazione di morte non serve: non si offre (ma i suoi cambi di frammento valgono lo stesso)
     if (SKIP_ANIM.test(animName)) { skipped.push(animName); continue; }
@@ -454,6 +554,18 @@ export async function buildSamUnit(samBuffer, entries, samPath = '') {
     sequences[k] = seq;
     labels[k] = animName;
     names.push(k);
+  }
+
+  // ---- la croce (origine) sta ai piedi: al centro dell'ombra del primo frame,
+  // come nelle unita' CGG. Tutto si sposta insieme, il movimento non cambia.
+  const foot = footPoint(framesDB, sequences[names[0]]);
+
+  if (foot) {
+
+    for (const k of names) {
+
+      for (const f of sequences[k]) { f.xOffset = -foot.x; f.yOffset = -foot.y; }
+    }
   }
 
   return {
@@ -542,7 +654,7 @@ export function reduceSamSequence(sequence, framesDB, tolerance) {
   const rows = sequence.map(f => framesDB[f.id] || []);
 
   // "forma" di un frame: quali ritagli, nello stesso ordine
-  const shape = rows.map(r => r.map(p => `${p.slot},${p.sx},${p.sy},${p.w},${p.h},${p.blendMode || 0}`).join('|'));
+  const shape = rows.map(r => r.map(p => `${p.sk},${p.sx},${p.sy},${p.w},${p.h},${p.blendMode || 0}`).join('|'));
 
   const dur = sequence.map(f => Math.max(1, Number(f.duration) || 1));
 

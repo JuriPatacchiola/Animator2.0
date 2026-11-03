@@ -11,7 +11,8 @@ import {
     frameDuration,
     sampleSequence,
     sequenceBounds,
-    sequenceTotalTicks
+    sequenceTotalTicks,
+    setSamSoft
 } from './smoothing.js';
 
 
@@ -1245,8 +1246,31 @@ const samEls = {
     num: document.getElementById('samTickMs'),
     info: document.getElementById('samDuration'),
     reduce: document.getElementById('samReduce'),
-    reduceInfo: document.getElementById('samReduceInfo')
+    reduceInfo: document.getElementById('samReduceInfo'),
+    soft: document.getElementById('samSoft')
 };
+
+// passaggio tra i disegni di due pose (scelta salvata nel browser)
+const SAM_SOFT_KEY = 'animator.samSoft';
+
+try {
+
+    const saved = localStorage.getItem(SAM_SOFT_KEY);
+
+    if (saved !== null && [...samEls.soft.options].some(o => o.value === saved)) samEls.soft.value = saved;
+
+} catch (e) { /* ignoro */ }
+
+setSamSoft(samEls.soft.value);
+
+samEls.soft.addEventListener('change', () => {
+
+    setSamSoft(samEls.soft.value);
+
+    try { localStorage.setItem(SAM_SOFT_KEY, samEls.soft.value); } catch (e) { /* ignoro */ }
+
+    renderCurrentFrame();
+});
 
 const SAM_REDUCE_KEY = 'animator.samReduce';
 

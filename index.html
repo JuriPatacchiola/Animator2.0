@@ -112,6 +112,14 @@
                         <option value="2">Frame principali · pochi</option>
                     </select>
                     <span id="samReduceInfo" style="font-size:11px;line-height:1.4;color:#6b7280"></span>
+                    <span style="margin-top:4px">Passaggio tra i disegni</span>
+                    <select id="samSoft"
+                        style="width:100%;padding:6px;background:#2a2f3a;color:#fff;border:1px solid #4b5563;border-radius:4px"
+                        title="Ogni posa del .sam usa frammenti suoi: tra una posa e l'altra non c'e' niente da muovere, i disegni possono solo cambiare. 'Dissolvenza breve' tiene la posa ferma e sfuma verso la prossima alla fine (movimento piu' dolce, senza doppie immagini fisse); 'lunga' sfuma per tutto il frame; 'Netto' cambia di colpo come nel file. I pezzi che sono lo stesso disegno in due pose si muovono sempre in modo continuo. Serve il Morbido acceso.">
+                        <option value="0.3" selected>Dissolvenza breve (consigliato)</option>
+                        <option value="1">Dissolvenza lunga (per tutto il frame)</option>
+                        <option value="0">Netto, come nel file</option>
+                    </select>
                 </div>
 
                 <div title="Animazione Completa: quante volte ripetere ogni parte, nell'ordine idle, move, attack. Con 0 la parte viene saltata."
