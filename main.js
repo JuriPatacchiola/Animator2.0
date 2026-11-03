@@ -7,7 +7,9 @@ import {
     TICK_MS,
     composeFrame,
     computeGroundShifts,
+    findShadowKeys,
     frameDuration,
+    pieceKey,
     sampleSequence,
     sequenceBounds,
     sequenceTotalTicks
@@ -1783,7 +1785,9 @@ try {
 
     if (v && v.bgAll) bgEls.all.checked = true;
 
-    if (v && v.gifSoft === false) document.getElementById('gifSoft').checked = false;
+    // vecchie versioni salvavano true/false: true = default, false = nessun puntino
+    if (v && (v.gifSoft === 'all' || v.gifSoft === 'off' || v.gifSoft === 'shadow')) document.getElementById('gifSoft').value = v.gifSoft;
+    else if (v && v.gifSoft === false) document.getElementById('gifSoft').value = 'off';
 
 } catch (e) { /* ignoro */ }
 
@@ -1800,7 +1804,7 @@ function saveExportPrefs() {
             bg: bgEls.color.value,
             bgAlpha: bgEls.num.value,
             bgAll: bgEls.all.checked,
-            gifSoft: document.getElementById('gifSoft').checked
+            gifSoft: document.getElementById('gifSoft').value
         }));
 
     } catch (e) { /* ignoro */ }
@@ -1993,7 +1997,10 @@ function exportPlan(scale, maxMp = 0) {
     // frame intermedi: si sceglie qui, a prescindere dal "Morbido" dello schermo
     const smooth = document.getElementById('exportSmooth').checked;
 
-    return { sequence, shifts, box, scale, width, height, totalTicks, totalCs, smooth };
+    // ritagli dell'ombra (per la GIF con la sola ombra a puntini)
+    const shadowKeys = findShadowKeys(state.framesDB);
+
+    return { sequence, shifts, box, scale, width, height, totalTicks, totalCs, smooth, shadowKeys };
 }
 
 function planFrames(plan, fps) {
@@ -2045,6 +2052,8 @@ const readPixels = (cv) =>
     - 'gif-mask'  sfondo trasparente (opacita' 0%), tutto o niente: i pixel
                   oltre meta' diventano pieni (l'ombra diventa una macchia
                   nera), gli altri spariscono;
+    - 'gif-shadow' sfondo trasparente e puntini SOLO sull'ombra: tutto il
+                  resto resta netto (tutto o niente);
     - 'gif-alpha' la GIF ha solo "trasparente o pieno", quindi ogni
                   semitrasparenza (ombra, bagliori, sfondo con opacita'
                   intermedia) e' simulata con una retinatura a puntini FISSA
@@ -2092,6 +2101,74 @@ function hexToRgb(hex) {
 function framePixels(plan, k, mode, bg, canvas, maskCanvas, alpha = 1) {
 
     const pieces = framePieces(plan, k);
+
+    if (mode === 'gif-shadow') {
+
+        /*
+            Sfondo trasparente, retinatura SOLO sull'ombra: il personaggio
+            e gli effetti restano netti (tutto o niente, come 'gif-mask');
+            l'ombra, che sta sotto, e' semitrasparente a puntini.
+        */
+
+        const keys = plan.shadowKeys;
+
+        const isShadow = (p) => keys && keys.has(pieceKey(p));
+
+        const body = keys ? pieces.filter(p => !isShadow(p)) : pieces;
+        const shad = keys ? pieces.filter(isShadow) : [];
+
+        Renderer.renderToCanvas(body, plan.box, plan.scale, null, canvas);
+
+        const data = readPixels(canvas);
+
+        let sh = null;
+
+        if (shad.length) {
+
+            Renderer.renderToCanvas(shad, plan.box, plan.scale, null, maskCanvas);
+
+            sh = readPixels(maskCanvas);
+        }
+
+        const [br, bgc, bb] = hexToRgb(bg);
+
+        const w = canvas.width;
+
+        for (let p = 0, i = 0; p < data.length; p += 4, i++) {
+
+            const m = data[p + 3] / 255;
+
+            if (m >= 0.5) {
+
+                // personaggio: colore fuso con lo sfondo scelto (niente aloni), pieno
+                data[p] = Math.round(data[p] * m + br * (1 - m));
+                data[p + 1] = Math.round(data[p + 1] * m + bgc * (1 - m));
+                data[p + 2] = Math.round(data[p + 2] * m + bb * (1 - m));
+                data[p + 3] = 255;
+
+                continue;
+            }
+
+            let s = sh ? sh[p + 3] / 255 : 0;
+
+            if (s < 0.06) s = 0;
+            else if (s > 0.94) s = 1;
+
+            if (s > BAYER8[((((i / w) | 0) & 7) << 3) | ((i % w) & 7)]) {
+
+                data[p] = sh[p];
+                data[p + 1] = sh[p + 1];
+                data[p + 2] = sh[p + 2];
+                data[p + 3] = 255;
+
+            } else {
+
+                data[p + 3] = 0;
+            }
+        }
+
+        return data;
+    }
 
     if (mode === 'gif-alpha') {
 
@@ -2232,7 +2309,7 @@ function backgroundOptions() {
         bg,
         bgAlpha,
         bgFill,
-        gifSoft: document.getElementById('gifSoft').checked,
+        gifSoft: document.getElementById('gifSoft').value,
         fillAll: document.getElementById('bgAll').checked ? bgFill : null
     };
 }
@@ -2305,10 +2382,12 @@ btnGif.onclick = () => runExport(btnGif, async (o) => {
     const plan = planFrames(exportPlan(o.scale, o.gifMaxMp), o.fps);
 
     // 100% = sfondo pieno, 0% = trasparente, in mezzo = puntini (la GIF non ha mezze trasparenze)
-    // sfondo trasparente: ombra e bagliori semitrasparenti a puntini (come il WebM) oppure tutto o niente (come prima)
+    // sfondo trasparente: puntini solo sull'ombra (consigliato), su ombra e bagliori, oppure tutto o niente
     const mode = o.bgAlpha >= 1
         ? 'gif'
-        : (o.bgAlpha <= 0 && !o.gifSoft ? 'gif-mask' : 'gif-alpha');
+        : (o.bgAlpha > 0
+            ? 'gif-alpha'
+            : (o.gifSoft === 'all' ? 'gif-alpha' : (o.gifSoft === 'off' ? 'gif-mask' : 'gif-shadow')));
 
     const canvas = document.createElement('canvas');
     const maskCanvas = document.createElement('canvas');

@@ -45,23 +45,16 @@ export function pieceKey(p) {
 }
 
 
-// ------------------------------------------------------------
-// BLOCCO A TERRA
-//
-// L'ultimo pezzo di ogni riga del CGG e' l'ombra (un'ellisse piu'
-// larga che alta, sempre la stessa o quasi). Se i frame la
-// spostano, il personaggio sembra scivolare di lato: calcolo di
-// quanto spostare ogni frame per tenere l'ombra ferma dove sta
-// nel primo frame.
-//
-// Restituisce un array {x, y} per ogni riga del CGG.
-// ------------------------------------------------------------
+/*
+    Riconosce il pezzo "ombra": l'ultimo pezzo di quasi tutte le righe del
+    CGG e' sempre lo stesso ritaglio (o al massimo due). Restituisce l'insieme
+    delle chiavi (pieceKey) di quei ritagli, oppure null se non c'e' un'ombra
+    riconoscibile.
+*/
 
-export function computeGroundShifts(framesDB) {
+export function findShadowKeys(framesDB) {
 
-    const none = framesDB.map(() => ({ x: 0, y: 0 }));
-
-    if (framesDB.length < 2) return none;
+    if (framesDB.length < 2) return null;
 
     const count = new Map();
 
@@ -82,10 +75,31 @@ export function computeGroundShifts(framesDB) {
 
     const covered = top.reduce((sum, e) => sum + e[1], 0);
 
-    // se non c'e' un'ombra riconoscibile non tocco niente
-    if (covered / framesDB.length < 0.7 || top.some(e => e[1] < 2)) return none;
+    // se non c'e' un'ombra riconoscibile non si tocca niente
+    if (covered / framesDB.length < 0.7 || top.some(e => e[1] < 2)) return null;
 
-    const shadowKeys = new Set(top.map(e => e[0]));
+    return new Set(top.map(e => e[0]));
+}
+
+// ------------------------------------------------------------
+// BLOCCO A TERRA
+//
+// L'ultimo pezzo di ogni riga del CGG e' l'ombra (un'ellisse piu'
+// larga che alta, sempre la stessa o quasi). Se i frame la
+// spostano, il personaggio sembra scivolare di lato: calcolo di
+// quanto spostare ogni frame per tenere l'ombra ferma dove sta
+// nel primo frame.
+//
+// Restituisce un array {x, y} per ogni riga del CGG.
+// ------------------------------------------------------------
+
+export function computeGroundShifts(framesDB) {
+
+    const none = framesDB.map(() => ({ x: 0, y: 0 }));
+
+    const shadowKeys = findShadowKeys(framesDB);
+
+    if (!shadowKeys) return none;
 
     const anchors = framesDB.map(pieces => {
 
