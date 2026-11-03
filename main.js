@@ -4019,3 +4019,439 @@ function gameLoop(timestamp) {
 
 
 initAssembler();
+
+// ============================================================
+// VISTA DEI FRAME ESPORTATI
+//
+// Mostra, uno per uno e su scacchiera, i frame che finiscono davvero in
+// GIF, APNG e video (stesso calcolo dell'esportazione: stessi pezzi,
+// stesse impostazioni) e segna quelli con pezzi semitrasparenti o vuoti.
+// I frame identici di fila sono uniti (come nel video).
+// ============================================================
+
+const fvEls = {
+    overlay: document.getElementById('fvOverlay'),
+    grid: document.getElementById('fvGrid'),
+    summary: document.getElementById('fvSummary'),
+    hint: document.getElementById('fvHint'),
+    only: document.getElementById('fvOnlyFx'),
+    netto: document.getElementById('fvNetto'),
+    big: document.getElementById('fvBig'),
+    bigCv: document.getElementById('fvBigCv'),
+    bigInfo: document.getElementById('fvBigInfo'),
+    bigPieces: document.getElementById('fvBigPieces'),
+    play: document.getElementById('fvPlay'),
+    bg: document.getElementById('fvBg')
+};
+
+const fv = { token: 0, plan: null, items: [], crop: null, cur: -1, playing: false, raf: 0 };
+
+function fvStopPlay() {
+
+    fv.playing = false;
+
+    if (fv.raf) cancelAnimationFrame(fv.raf);
+
+    fv.raf = 0;
+
+    fvEls.play.textContent = '▶ Riproduci';
+}
+
+// riproduce i frame con i loro tempi veri (tutto il giro dell'animazione, in ciclo)
+function fvStartPlay() {
+
+    const items = fv.items;
+
+    if (!items.length) return;
+
+    const last = items[items.length - 1];
+
+    const loop = last.start + last.dur;
+
+    if (!(loop > 0)) return;
+
+    fvStopPlay();
+
+    fv.playing = true;
+
+    fvEls.play.textContent = '❚❚ Pausa';
+
+    const t0 = performance.now() - (fv.cur >= 0 ? items[fv.cur].start : 0);
+
+    const step = (now) => {
+
+        if (!fv.playing) return;
+
+        const t = (now - t0) % loop;
+
+        let lo = 0, hi = items.length - 1;
+
+        while (lo < hi) {
+
+            const mid = (lo + hi + 1) >> 1;
+
+            if (items[mid].start <= t) lo = mid; else hi = mid - 1;
+        }
+
+        if (lo !== fv.cur) fvShowBig(lo, true);
+
+        fv.raf = requestAnimationFrame(step);
+    };
+
+    fv.raf = requestAnimationFrame(step);
+}
+
+// pezzi visibili e pezzi semitrasparenti di un frame (l'ombra e' sempre semitrasparente: non conta)
+function fvInspect(plan, pieces) {
+
+    let visible = 0;
+
+    const fx = [];
+
+    for (const p of pieces) {
+
+        const o = Number.isFinite(p.opacity) ? p.opacity : 100;
+
+        if (o <= 0.5 || !(p.w > 0) || !(p.h > 0)) continue;
+
+        visible++;
+
+        if (o < 99.5 && !plan.isShadow(p)) fx.push({ w: Math.round(p.w), h: Math.round(p.h), o: Math.round(o), add: p.blendMode === 1 });
+    }
+
+    return { visible, fx };
+}
+
+const fvTime = (ms) => (ms / 1000).toFixed(2).replace('.', ',') + ' s';
+
+function fvClose() {
+
+    fv.token++;
+
+    fvStopPlay();
+
+    fvEls.overlay.style.display = 'none';
+    fvEls.big.style.display = 'none';
+    fvEls.grid.textContent = '';
+
+    fv.items = [];
+}
+
+async function openFrameView() {
+
+    const sequence = state.sequences[state.current];
+
+    if (!sequence || sequence.length === 0) {
+
+        alert('Carica prima un\'unità.');
+
+        return;
+    }
+
+    const token = ++fv.token;
+
+    fvStopPlay();
+
+    fvEls.overlay.style.display = 'flex';
+    fvEls.big.style.display = 'none';
+    fvEls.grid.textContent = '';
+    fvEls.hint.textContent = '';
+    fvEls.hint.className = 'fv-hint';
+    fvEls.netto.style.display = 'none';
+    fvEls.summary.textContent = 'Preparo i frame…';
+
+    await pause0();
+
+    // stesso piano dell'esportazione (se l'area e' enorme ne uso una piu' piccola: serve solo a guardare)
+    const areaWarn = state.areaWarning;
+
+    let plan = null;
+
+    for (const sc of [exportScale(), 1, 0.2]) {
+
+        try {
+
+            plan = planFrames(exportPlan(sc), Number(document.getElementById('gifFps').value) || 50);
+
+            break;
+
+        } catch (e) { /* area troppo grande: riprovo con meno pixel */ }
+    }
+
+    state.areaWarning = areaWarn;
+
+    if (!plan) {
+
+        fvEls.summary.textContent = 'Non riesco a preparare i frame.';
+
+        return;
+    }
+
+    // frame diversi tra loro, in ordine, con tempo di inizio e durata
+    const items = [];
+
+    let lastSig = null;
+    let acc = 0;
+
+    for (let k = 0; k < plan.n; k++) {
+
+        const pieces = framePieces(plan, k);
+
+        const sig = JSON.stringify(pieces);
+
+        if (sig !== lastSig) {
+
+            lastSig = sig;
+
+            items.push({ k, start: acc * 10, dur: 0, pieces, ...fvInspect(plan, pieces) });
+        }
+
+        acc += plan.delays[k];
+
+        const last = items[items.length - 1];
+
+        last.dur = acc * 10 - last.start;
+
+        if (k % 40 === 0) {
+
+            fvEls.summary.textContent = `Preparo i frame… ${Math.round(k / plan.n * 100)}%`;
+
+            await pause0();
+
+            if (token !== fv.token) return;
+        }
+    }
+
+    // inquadratura: stretta sul personaggio (l'area di esportazione puo' essere molto piu' grande)
+    const box = plan.box;
+
+    const ts1 = Math.min(1, 360 / Math.max(box.w, box.h));
+
+    const probe = document.createElement('canvas');
+
+    let ax0 = Infinity, ay0 = Infinity, ax1 = -Infinity, ay1 = -Infinity;
+
+    for (let i = 0; i < items.length; i++) {
+
+        Renderer.renderToCanvas(items[i].pieces, box, ts1, null, probe);
+
+        const d = probe.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, probe.width, probe.height).data;
+
+        const W = probe.width;
+
+        for (let y = 0; y < probe.height; y++) {
+
+            for (let x = 0; x < W; x++) {
+
+                if (d[(y * W + x) * 4 + 3] > 8) {
+
+                    if (x < ax0) ax0 = x;
+                    if (x > ax1) ax1 = x;
+                    if (y < ay0) ay0 = y;
+                    if (y > ay1) ay1 = y;
+                }
+            }
+        }
+
+        if (i % 30 === 0) {
+
+            await pause0();
+
+            if (token !== fv.token) return;
+        }
+    }
+
+    let crop = box;
+
+    if (ax0 <= ax1) {
+
+        const m = 6;
+
+        const x0 = Math.max(box.x, box.x + ax0 / ts1 - m);
+        const y0 = Math.max(box.y, box.y + ay0 / ts1 - m);
+        const x1 = Math.min(box.x + box.w, box.x + (ax1 + 1) / ts1 + m);
+        const y1 = Math.min(box.y + box.h, box.y + (ay1 + 1) / ts1 + m);
+
+        crop = { x: x0, y: y0, w: Math.max(8, x1 - x0), h: Math.max(8, y1 - y0) };
+    }
+
+    const ts2 = Math.max(0.3, Math.min(4, 300 / crop.w, 220 / crop.h));
+
+    fv.plan = plan;
+    fv.items = items;
+    fv.crop = crop;
+    fv.cur = -1;
+
+    // riepilogo e suggerimento
+    const nFx = items.filter(it => it.fx.length).length;
+    const nEmpty = items.filter(it => it.visible === 0).length;
+
+    const soft = state.samMode ? Number(samEls.soft.value) : 0;
+
+    const softName = state.samMode ? samEls.soft.selectedOptions[0].text.replace(/\s*\(.*\)\s*$/, '') : '';
+
+    fvEls.summary.textContent = `${items.length} frame diversi (${plan.n} fotogrammi in tutto)`
+        + ` · con pezzi semitrasparenti: ${nFx} · vuoti: ${nEmpty}`
+        + (state.samMode ? ` · Passaggio tra i disegni: ${softName}` : '')
+        + ` · Morbido: ${plan.smooth ? 'sì' : 'no'}`;
+
+    const lines = [];
+
+    if (nEmpty) lines.push(`⚠ ${nEmpty} frame vuoti (nessun pezzo visibile): sono evidenziati in rosso.`);
+
+    if (nFx) {
+
+        if (soft > 0) {
+
+            lines.push(`⚠ ${nFx} frame hanno pezzi semitrasparenti (bordo arancione). Li crea il «Passaggio tra i disegni» (ora su «${softName}»): nel file .sam non ci sono. Premi il pulsante «Netto» in alto per toglierli.`);
+
+            fvEls.netto.style.display = '';
+
+        } else {
+
+            lines.push(`${nFx} frame hanno pezzi semitrasparenti (bordo arancione): qui la trasparenza è scritta nel file stesso (l'ombra non conta). Clicca un frame per vedere quale pezzo e quanto.`);
+        }
+
+    } else if (!nEmpty) {
+
+        lines.push('Nessun pezzo semitrasparente e nessun frame vuoto: tutti i frame sono pieni.');
+    }
+
+    fvEls.hint.textContent = lines.join(' ');
+
+    fvEls.hint.className = 'fv-hint' + ((nEmpty || (nFx && soft > 0)) ? ' warn' : '');
+
+    // le miniature, a gruppi per non bloccare la pagina
+    for (let i = 0; i < items.length; i++) {
+
+        const it = items[i];
+
+        const tile = document.createElement('div');
+
+        tile.className = 'fv-tile' + (it.visible === 0 ? ' empty' : (it.fx.length ? ' fx' : ''));
+
+        const cv = document.createElement('canvas');
+
+        Renderer.renderToCanvas(it.pieces, crop, ts2, null, cv);
+
+        const cap = document.createElement('div');
+
+        cap.textContent = `#${i + 1} · ${fvTime(it.start)} · ${it.dur} ms`;
+
+        tile.append(cv, cap);
+
+        if (it.visible === 0 || it.fx.length) {
+
+            const badge = document.createElement('div');
+
+            badge.className = 'fv-badge';
+
+            badge.textContent = it.visible === 0
+                ? '⚠ VUOTO'
+                : `⚠ ${it.fx.length} pezz${it.fx.length === 1 ? 'o' : 'i'} semitrasparent${it.fx.length === 1 ? 'e' : 'i'} (min ${Math.min(...it.fx.map(f => f.o))}%)`;
+
+            tile.append(badge);
+        }
+
+        tile.onclick = () => fvShowBig(i);
+
+        fvEls.grid.append(tile);
+
+        if (i % 12 === 11) {
+
+            await pause0();
+
+            if (token !== fv.token) return;
+        }
+    }
+}
+
+function fvShowBig(i, keepPlaying) {
+
+    if (!fv.items.length) return;
+
+    if (!keepPlaying) fvStopPlay();
+
+    i = (i + fv.items.length) % fv.items.length;
+
+    fv.cur = i;
+
+    const it = fv.items[i];
+
+    const crop = fv.crop;
+
+    const fit = Math.min((window.innerWidth - 60) / crop.w, (window.innerHeight - 230) / crop.h);
+
+    const ts = fit >= 1 ? Math.floor(fit) : Math.max(0.2, fit);
+
+    fvEls.big.style.display = 'flex';
+
+    // sfondo: scacchiera (si vede la trasparenza) oppure quello scelto per l'esportazione
+    const bg = fvEls.bg.value === 'export' ? (backgroundOptions().bgFill || null) : null;
+
+    Renderer.renderToCanvas(it.pieces, crop, ts, bg, fvEls.bigCv);
+
+    fvEls.bigInfo.textContent = `Frame ${i + 1} di ${fv.items.length} · ${fvTime(it.start)} · dura ${it.dur} ms`;
+
+    fvEls.bigPieces.style.color = (it.visible === 0 || it.fx.length) ? '#fbbf24' : '#9ca3af';
+
+    fvEls.bigPieces.textContent = it.visible === 0
+        ? '⚠ Frame vuoto: nessun pezzo visibile.'
+        : (it.fx.length
+            ? '⚠ Pezzi semitrasparenti: ' + it.fx.map(f => `${f.w}×${f.h} px al ${f.o}%${f.add ? ' (luce additiva)' : ''}`).join(' · ')
+            : 'Tutti i pezzi sono pieni (l\'ombra a terra è sempre un po\' trasparente).');
+}
+
+document.getElementById('viewFrames').onclick = openFrameView;
+document.getElementById('fvClose').onclick = fvClose;
+document.getElementById('fvBigClose').onclick = () => { fvStopPlay(); fvEls.big.style.display = 'none'; };
+document.getElementById('fvPlayAll').onclick = () => { fvShowBig(0, true); fvStartPlay(); };
+fvEls.play.onclick = () => { if (fv.playing) fvStopPlay(); else fvStartPlay(); };
+fvEls.bg.addEventListener('change', () => { if (fv.cur >= 0) fvShowBig(fv.cur, true); });
+document.getElementById('fvPrev').onclick = () => fvShowBig(fv.cur - 1);
+document.getElementById('fvNext').onclick = () => fvShowBig(fv.cur + 1);
+
+fvEls.only.addEventListener('change', () => fvEls.grid.classList.toggle('only-fx', fvEls.only.checked));
+
+fvEls.netto.onclick = () => {
+
+    samEls.soft.value = '0';
+
+    samEls.soft.dispatchEvent(new Event('change'));
+
+    openFrameView();
+};
+
+window.addEventListener('keydown', (e) => {
+
+    if (fvEls.overlay.style.display === 'none') return;
+
+    const bigOpen = fvEls.big.style.display !== 'none';
+
+    if (e.key === 'Escape') {
+
+        if (bigOpen) { fvStopPlay(); fvEls.big.style.display = 'none'; } else fvClose();
+
+        e.preventDefault();
+
+    } else if (bigOpen && e.key === ' ') {
+
+        if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+
+        if (fv.playing) fvStopPlay(); else fvStartPlay();
+
+        e.preventDefault();
+
+    } else if (bigOpen && e.key === 'ArrowLeft') {
+
+        fvShowBig(fv.cur - 1);
+
+        e.preventDefault();
+
+    } else if (bigOpen && e.key === 'ArrowRight') {
+
+        fvShowBig(fv.cur + 1);
+
+        e.preventDefault();
+    }
+});

@@ -538,3 +538,119 @@ body.drag-over::after {
     border: 4px dashed #3b82f6;
     pointer-events: none;
 }
+
+
+/* ---------- vista dei frame esportati ---------- */
+.fv-hint {
+    padding: 8px 12px;
+    font-size: 13px;
+    line-height: 1.45;
+    color: #e5e7eb;
+    background: #1b2029;
+    border-bottom: 1px solid #2e3340
+}
+
+.fv-hint.warn {
+    color: #fbbf24;
+    background: #2a2312
+}
+
+.fv-grid {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 8px;
+    padding: 10px;
+    align-content: start
+}
+
+.fv-tile {
+    background: #161a22;
+    border: 2px solid #2e3340;
+    border-radius: 6px;
+    padding: 6px;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    color: #cbd5e1
+}
+
+.fv-tile:hover {
+    border-color: #6b7280
+}
+
+.fv-tile.fx {
+    border-color: #f59e0b
+}
+
+.fv-tile.empty {
+    border-color: #ef4444
+}
+
+.fv-tile .fv-badge {
+    font-weight: 600;
+    color: #fbbf24
+}
+
+.fv-tile.empty .fv-badge {
+    color: #f87171
+}
+
+.fv-grid.only-fx .fv-tile:not(.fx):not(.empty) {
+    display: none
+}
+
+.fv-tile canvas,
+.fv-bigwrap canvas {
+    max-width: 100%;
+    height: auto;
+    image-rendering: pixelated;
+    background-color: #3a3f4b;
+    background-image:
+        linear-gradient(45deg, #4b5160 25%, transparent 25%, transparent 75%, #4b5160 75%),
+        linear-gradient(45deg, #4b5160 25%, transparent 25%, transparent 75%, #4b5160 75%);
+    background-size: 16px 16px;
+    background-position: 0 0, 8px 8px
+}
+
+.fv-big {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    background: #0a0c10;
+    display: flex;
+    flex-direction: column
+}
+
+.fv-bigbar {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 8px 12px;
+    background: #161a22;
+    border-bottom: 1px solid #2e3340;
+    color: #e5e7eb
+}
+
+.fv-bigwrap {
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 10px
+}
+
+.fv-bigpieces {
+    padding: 8px 12px;
+    font-size: 13px;
+    color: #fbbf24;
+    border-top: 1px solid #2e3340;
+    min-height: 20px
+}

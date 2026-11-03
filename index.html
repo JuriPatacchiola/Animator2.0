@@ -302,6 +302,10 @@
                     <div id="samSoftWarn"
                         style="display:none;font-size:12px;line-height:1.4;color:#fbbf24;background:#2a2312;border:1px solid #92400e;border-radius:6px;padding:8px">
                     </div>
+                    <button id="viewFrames" class="secondary-btn"
+                        title="Anteprima di come verrà esportato: guardi l'animazione che finisce davvero in GIF, APNG e video (stesso calcolo dell'esportazione, stessi tempi) oppure scorri i frame uno per uno su scacchiera; segna quelli con pezzi semitrasparenti o vuoti.">
+                        👁 Anteprima di come esporta
+                    </button>
                     <button id="downloadGif" class="primary-btn"
                         style="background: linear-gradient(135deg, #10b981, #059669);">
                         🎞️ ESPORTA GIF
@@ -332,6 +336,43 @@
         <main class="canvas-container">
             <canvas id="cv"></canvas>
         </main>
+    </div>
+
+    <div id="fvOverlay" class="asm-overlay" style="display:none">
+        <div class="asm-top">
+            <b>👁 Anteprima dell'esportazione</b>
+            <span id="fvSummary" style="color:#9ca3af"></span>
+            <span style="flex:1"></span>
+            <label style="display:flex;align-items:center;gap:6px;color:#e5e7eb">
+                <input type="checkbox" id="fvOnlyFx"> Solo frame con trasparenza o vuoti
+            </label>
+            <button id="fvPlayAll" class="secondary-btn" style="background:#10b981;border-color:#10b981;color:#fff"
+                title="Riproduce l'animazione esattamente come verrà esportata (stessi frame, stessi tempi, in ciclo)">▶
+                Anteprima animata</button>
+            <button id="fvNetto" class="secondary-btn" style="display:none"
+                title="Imposta «Passaggio tra i disegni» su «Netto» e ricalcola questi frame">Metti «Netto»</button>
+            <button id="fvClose" class="secondary-btn">✖ Chiudi</button>
+        </div>
+        <div id="fvHint" class="fv-hint"></div>
+        <div id="fvGrid" class="fv-grid"></div>
+        <div id="fvBig" class="fv-big" style="display:none">
+            <div class="fv-bigbar">
+                <button id="fvPlay" class="secondary-btn" title="Riproduci / pausa (barra spaziatrice)">▶
+                    Riproduci</button>
+                <button id="fvPrev" class="secondary-btn">⬅</button>
+                <button id="fvNext" class="secondary-btn">➡</button>
+                <span id="fvBigInfo"></span>
+                <span style="flex:1"></span>
+                <select id="fvBg" title="Sfondo dell'anteprima"
+                    style="background:#2a2f3a;color:#fff;border:1px solid #4b5563;border-radius:4px;padding:4px">
+                    <option value="checker">Sfondo: scacchiera (vedo la trasparenza)</option>
+                    <option value="export">Sfondo: come lo scelgo per l'esportazione</option>
+                </select>
+                <button id="fvBigClose" class="secondary-btn">✖ Torna all'elenco</button>
+            </div>
+            <div class="fv-bigwrap"><canvas id="fvBigCv"></canvas></div>
+            <div id="fvBigPieces" class="fv-bigpieces"></div>
+        </div>
     </div>
 
     <div id="asmOverlay" class="asm-overlay" style="display:none">
