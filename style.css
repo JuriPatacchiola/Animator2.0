@@ -521,3 +521,20 @@ input[type="color"] {
     width: 110px;
     min-width: 0
 }
+
+/* ---------- trascinamento dei file sulla pagina ---------- */
+body.drag-over::after {
+    content: "📥 Rilascia qui PNG, CGG, Idle, Atk e Move";
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    font-weight: bold;
+    color: #fff;
+    background: rgba(37, 99, 235, 0.35);
+    border: 4px dashed #3b82f6;
+    pointer-events: none;
+}

@@ -381,6 +381,196 @@ document
 
 
 // ============================================================
+// CARICAMENTO MULTIPLO
+//
+// Un solo clic (o un trascinamento sulla pagina) per caricare
+// insieme PNG, CGG e i CGS di idle / atk / move. Ogni file va nel
+// suo posto in base al NOME:
+//
+//   .png / .jpg          -> immagine (sheet)
+//   contiene "cgg"       -> struttura CGG
+//   contiene "idle"      -> CGS Idle
+//   contiene "atk"       -> CGS Attack  (anche "attack")
+//   contiene "move"      -> CGS Move
+//
+// I pulsanti singoli restano com'erano.
+// ============================================================
+
+const SLOTS = ['img', 'cgg', 'idle', 'atk', 'move'];
+
+const SLOT_LABEL = {
+    img: 'PNG',
+    cgg: 'CGG',
+    idle: 'Idle',
+    atk: 'Attack',
+    move: 'Move'
+};
+
+const multiInfo = document.getElementById('multiInfo');
+
+function slotFile(id) {
+
+    return document.getElementById(id).files[0] || null;
+}
+
+function classifyFile(file) {
+
+    const n = file.name.toLowerCase();
+
+    if (/\.(png|jpe?g)$/.test(n)) return 'img';
+
+    if (!/\.(csv|cgg|cgs|txt)$/.test(n)) return null;
+
+    if (n.includes('cgg')) return 'cgg';
+    if (n.includes('idle')) return 'idle';
+    if (n.includes('atk') || n.includes('attack')) return 'atk';
+    if (n.includes('move')) return 'move';
+
+    return null;
+}
+
+// mette (o toglie, con null) un file in uno dei cinque posti
+function setSlot(id, file) {
+
+    const input = document.getElementById(id);
+
+    const dt = new DataTransfer();
+
+    if (file) dt.items.add(file);
+
+    input.files = dt.files;
+
+    input.parentElement.classList.toggle('loaded', !!file);
+}
+
+// elenco di cio' che e' caricato adesso (vale anche per i pulsanti singoli)
+function showLoaded(notes = []) {
+
+    if (!multiInfo) return;
+
+    const lines = SLOTS.map(id => {
+
+        const f = slotFile(id);
+
+        return f ? `✔ ${SLOT_LABEL[id]}: ${f.name}` : `✖ ${SLOT_LABEL[id]}`;
+    });
+
+    multiInfo.innerText = lines.concat(notes).join('\n');
+}
+
+function loadMany(fileList) {
+
+    const files = [...fileList];
+
+    const found = {};
+    const doubles = [];
+    const unknown = [];
+
+    for (const f of files) {
+
+        const slot = classifyFile(f);
+
+        if (!slot) unknown.push(f.name);
+        else if (found[slot]) doubles.push(f.name);
+        else found[slot] = f;
+    }
+
+    const notes = [];
+
+    if (Object.keys(found).length === 0) {
+
+        showLoaded([`⚠ Nessun file riconosciuto (${files.map(f => f.name).join(', ') || 'vuoto'}). Il nome deve contenere cgg, idle, atk o move.`]);
+
+        return;
+    }
+
+    /*
+        Set completo di una nuova unita' (PNG + CGG + almeno un CGS):
+        le animazioni che non ci sono (es. nessun Move) vengono svuotate,
+        cosi' non resta quella dell'unita' di prima. Se invece ricarichi
+        solo qualche file (per esempio il CGG appena ritoccato) gli
+        altri restano dove sono.
+    */
+
+    const fullSet = found.img && found.cgg && (found.idle || found.atk || found.move);
+
+    for (const id of SLOTS) {
+
+        if (found[id]) setSlot(id, found[id]);
+        else if (fullSet && ['idle', 'atk', 'move'].includes(id)) setSlot(id, null);
+    }
+
+    if (doubles.length) notes.push(`⚠ Uso il primo file per ogni tipo, ignorati: ${doubles.join(', ')}`);
+    if (unknown.length) notes.push(`⚠ Non riconosciuti: ${unknown.join(', ')}`);
+
+    showLoaded(notes);
+
+    // con PNG, CGG e almeno un CGS parte da sola
+    const ready = slotFile('img') && slotFile('cgg') && ['idle', 'atk', 'move'].some(n => slotFile(n));
+
+    if (ready) btnStart.click();
+}
+
+document.getElementById('multiFiles').addEventListener('change', (event) => {
+
+    loadMany(event.target.files);
+
+    // si puo' riselezionare lo stesso gruppo di file
+    event.target.value = '';
+
+    event.target.parentElement.classList.remove('loaded');
+});
+
+// i pulsanti singoli aggiornano lo stesso elenco
+SLOTS.forEach(id => document.getElementById(id).addEventListener('change', () => showLoaded()));
+
+showLoaded();
+
+
+// ---- trascinamento dei file sulla pagina ----
+
+const hasFiles = (e) => e.dataTransfer && [...(e.dataTransfer.types || [])].includes('Files');
+
+const assemblerOpen = () => {
+
+    const o = document.getElementById('asmOverlay');
+
+    return o && o.style.display !== 'none';
+};
+
+window.addEventListener('dragover', (e) => {
+
+    if (!hasFiles(e)) return;
+
+    e.preventDefault();
+
+    if (!assemblerOpen()) document.body.classList.add('drag-over');
+});
+
+window.addEventListener('dragleave', (e) => {
+
+    // esce dalla finestra
+    if (e.clientX <= 0 || e.clientY <= 0 || e.clientX >= window.innerWidth || e.clientY >= window.innerHeight) {
+
+        document.body.classList.remove('drag-over');
+    }
+});
+
+window.addEventListener('drop', (e) => {
+
+    if (!hasFiles(e)) return;
+
+    e.preventDefault();
+
+    document.body.classList.remove('drag-over');
+
+    if (assemblerOpen()) return;
+
+    loadMany(e.dataTransfer.files);
+});
+
+
+// ============================================================
 // RENDER FRAME CORRENTE
 // ============================================================
 

@@ -18,6 +18,14 @@
 
             <div class="upload-group">
                 <h3>1. File Base (Obbligatori)</h3>
+                <label class="custom-file-upload" id="multiDrop"
+                    title="Seleziona insieme PNG, CGG e i CGS di idle, atk e move (Ctrl+A nella finestra dei file), oppure trascinali sulla pagina. Il tipo di ogni file si riconosce dal nome: ...cgg..., ...idle..., ...atk..., ...move...">
+                    <input type="file" id="multiFiles" multiple accept=".png,.jpg,.jpeg,.csv,.cgg,.cgs"> 📥 Carica TUTTI
+                    i file insieme
+                </label>
+                <div id="multiInfo"
+                    style="font-size:11px;line-height:1.5;color:#9ca3af;white-space:pre-line;margin-bottom:10px;word-break:break-all">
+                    Oppure trascina i file sulla pagina.</div>
                 <label class="custom-file-upload">
                     <input type="file" id="img" accept=".png,.jpg"> 📤 Carica Immagine (PNG)
                 </label>
