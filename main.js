@@ -3166,198 +3166,512 @@ btnApng.onclick = () => runExport(btnApng, async (o) => {
 
 
 /*
-    Il WebM registrato dal browser non dice quanto dura (manca la durata nell'intestazione):
-    i lettori lo trattano come infinito, non si puo' andare avanti e indietro e un sito
-    che lo riproduce non sa dove finisce. Qui si scrive la durata vera dentro il file.
-    Se qualcosa non torna il file resta com'e'.
+    WebM: il browser lo registra in tempo reale e i fotogrammi arrivano a intervalli
+    irregolari (da 8 a 40 ms invece dei 20 ms della GIF): sembra che "mangi" dei frame.
+    Qui il file registrato viene rimontato con i tempi esatti della GIF e con la durata
+    scritta nell'intestazione (senza, i lettori lo trattano come infinito).
+    Se qualcosa non torna, chi chiama usa il file cosi' com'e'.
 */
 
-function setWebmDuration(bytes, durationMs) {
+// ---- piccoli attrezzi per leggere/scrivere EBML (il contenitore di WebM) ----
+
+function ebmlReader(b) {
+
+    const readId = (p) => {
+
+        if (p >= b.length) return null;
+
+        let n = 1, m = 0x80;
+
+        while (n <= 4 && !(b[p] & m)) { m >>= 1; n++; }
+
+        if (n > 4 || p + n > b.length) return null;
+
+        let v = 0;
+
+        for (let i = 0; i < n; i++) v = v * 256 + b[p + i];
+
+        return { id: v, len: n };
+    };
+
+    const readSize = (p) => {
+
+        if (p >= b.length) return null;
+
+        let n = 1, m = 0x80;
+
+        while (n <= 8 && !(b[p] & m)) { m >>= 1; n++; }
+
+        if (n > 8 || p + n > b.length) return null;
+
+        let v = b[p] & (m - 1);
+        let ones = (b[p] & (m - 1)) === (m - 1);
+
+        for (let i = 1; i < n; i++) {
+
+            v = v * 256 + b[p + i];
+
+            if (b[p + i] !== 0xff) ones = false;
+        }
+
+        return { size: v, len: n, unknown: ones };
+    };
+
+    // intestazione di un elemento: id, dove inizia il contenuto, grandezza
+    const header = (p) => {
+
+        const id = readId(p);
+
+        if (!id) return null;
+
+        const sz = readSize(p + id.len);
+
+        if (!sz) return null;
+
+        return { id: id.id, idLen: id.len, sizeLen: sz.len, size: sz.size, unknown: sz.unknown, data: p + id.len + sz.len };
+    };
+
+    return { header };
+}
+
+function ebmlSize(value, minLen) {
+
+    let len = minLen;
+
+    while (len < 8 && value >= Math.pow(2, 7 * len) - 1) len++;
+
+    const out = new Uint8Array(len);
+
+    let v = value;
+
+    for (let i = len - 1; i >= 0; i--) {
+
+        out[i] = v % 256;
+        v = Math.floor(v / 256);
+    }
+
+    out[0] |= 0x80 >> (len - 1);
+
+    return out;
+}
+
+function ebmlIdBytes(id) {
+
+    const n = id > 0xFFFFFF ? 4 : id > 0xFFFF ? 3 : id > 0xFF ? 2 : 1;
+
+    const out = new Uint8Array(n);
+
+    let v = id;
+
+    for (let i = n - 1; i >= 0; i--) {
+
+        out[i] = v % 256;
+        v = Math.floor(v / 256);
+    }
+
+    return out;
+}
+
+// elemento = id + grandezza + contenuto (pezzi da unire)
+function ebmlWrap(id, parts) {
+
+    const idb = ebmlIdBytes(id);
+
+    let len = 0;
+
+    for (const p of parts) len += p.length;
+
+    const sz = ebmlSize(len, 1);
+
+    const out = new Uint8Array(idb.length + sz.length + len);
+
+    out.set(idb, 0);
+    out.set(sz, idb.length);
+
+    let w = idb.length + sz.length;
+
+    for (const p of parts) { out.set(p, w); w += p.length; }
+
+    return out;
+}
+
+// intero senza segno, con meno byte possibile
+function ebmlUInt(value) {
+
+    let n = 1;
+
+    while (n < 8 && value >= Math.pow(256, n)) n++;
+
+    const out = new Uint8Array(n);
+
+    let v = value;
+
+    for (let i = n - 1; i >= 0; i--) {
+
+        out[i] = v % 256;
+        v = Math.floor(v / 256);
+    }
+
+    return out;
+}
+
+// intero con segno (complemento a due), con meno byte possibile
+function ebmlSInt(value) {
+
+    let n = 1;
+
+    while (n < 8 && (value < -Math.pow(2, 8 * n - 1) || value >= Math.pow(2, 8 * n - 1))) n++;
+
+    const out = new Uint8Array(n);
+
+    let v = value < 0 ? value + Math.pow(2, 8 * n) : value;
+
+    for (let i = n - 1; i >= 0; i--) {
+
+        out[i] = v % 256;
+        v = Math.floor(v / 256);
+    }
+
+    return out;
+}
+
+function ebmlFloat64(value) {
+
+    const out = new Uint8Array(8);
+
+    new DataView(out.buffer).setFloat64(0, value);
+
+    return out;
+}
+
+const WEBM_CLUSTER_CHILD = new Set([0xE7, 0xA3, 0xA0, 0xA7, 0xAB, 0xAF, 0x5854, 0xEC, 0xBF]);
+
+/*
+    Rimonta il WebM: ogni fotogramma registrato (in ordine) prende il tempo dato in "times"
+    (millisecondi dall'inizio), la durata e' "durationMs". Se i fotogrammi registrati sono
+    meno di quelli mandati (il browser ne ha saltato qualcuno), ognuno viene abbinato a
+    quello mandato piu' vicino nel tempo ("submit" = quando e' stato mandato ciascuno).
+    Restituisce il nuovo file, oppure null se il file non e' come ci si aspetta.
+*/
+
+function retimeWebm(bytes, times, submit, durationMs) {
 
     try {
 
         const b = bytes;
+        const { header } = ebmlReader(b);
 
-        const readId = (p) => {
-
-            let n = 1, m = 0x80;
-
-            while (n <= 4 && !(b[p] & m)) { m >>= 1; n++; }
-
-            if (n > 4 || p + n > b.length) return null;
-
-            let v = 0;
-
-            for (let i = 0; i < n; i++) v = v * 256 + b[p + i];
-
-            return { id: v, len: n };
-        };
-
-        const readSize = (p) => {
-
-            let n = 1, m = 0x80;
-
-            while (n <= 8 && !(b[p] & m)) { m >>= 1; n++; }
-
-            if (n > 8 || p + n > b.length) return null;
-
-            let v = b[p] & (m - 1);
-            let ones = (b[p] & (m - 1)) === (m - 1);
-
-            for (let i = 1; i < n; i++) {
-
-                v = v * 256 + b[p + i];
-
-                if (b[p + i] !== 0xff) ones = false;
-            }
-
-            return { size: v, len: n, unknown: ones };
-        };
-
-        const header = (p) => {
-
-            const id = readId(p);
-
-            if (!id) return null;
-
-            const sz = readSize(p + id.len);
-
-            if (!sz) return null;
-
-            return { id: id.id, idLen: id.len, sizeLen: sz.len, size: sz.size, unknown: sz.unknown, data: p + id.len + sz.len };
-        };
-
-        const encodeSize = (value, minLen) => {
-
-            let len = minLen;
-
-            while (len < 8 && value >= Math.pow(2, 7 * len) - 1) len++;
-
-            const out = new Uint8Array(len);
-
-            let v = value;
-
-            for (let i = len - 1; i >= 0; i--) {
-
-                out[i] = v % 256;
-                v = Math.floor(v / 256);
-            }
-
-            out[0] |= 0x80 >> (len - 1);
-
-            return out;
-        };
-
-        // intestazione EBML, poi il Segment
         const ebml = header(0);
 
         if (!ebml || ebml.id !== 0x1A45DFA3) return null;
 
-        const seg = header(ebml.data + ebml.size);
+        const ebmlEnd = ebml.data + ebml.size;
+
+        const seg = header(ebmlEnd);
 
         if (!seg || seg.id !== 0x18538067) return null;
 
-        // dentro il Segment si cerca "Info" (sta sempre prima dei Cluster)
-        let info = null;
+        const segEnd = seg.unknown ? b.length : Math.min(b.length, seg.data + seg.size);
 
-        for (let p = seg.data; p < b.length;) {
-
-            const h = header(p);
-
-            if (!h || h.unknown || h.id === 0x1F43B675) break;
-
-            if (h.id === 0x1549A966) { info = h; break; }
-
-            p = h.data + h.size;
-        }
-
-        if (!info) return null;
-
-        // dentro Info: scala del tempo e, se c'e' gia', la durata
         let scale = 1000000;
-        let durPos = -1;
-        let durSize = 0;
 
-        for (let p = info.data; p < info.data + info.size;) {
+        const pre = [];           // elementi prima dei Cluster, copiati cosi' come sono
+        const infoKept = [];      // contenuto di Info senza la durata
+        let infoSeen = false;
+
+        const blocks = [];
+
+        const uint = (pos, len) => {
+
+            let v = 0;
+
+            for (let i = 0; i < len; i++) v = v * 256 + b[pos + i];
+
+            return v;
+        };
+
+        // un Block / SimpleBlock: numero di traccia (1 byte o piu'), tempo relativo, flag
+        const blockInfo = (data) => {
+
+            let n = 1, m = 0x80;
+
+            while (n <= 8 && !(b[data] & m)) { m >>= 1; n++; }
+
+            const rel = (b[data + n] << 8 | b[data + n + 1]) << 16 >> 16;
+
+            return { trackLen: n, rel, flags: b[data + n + 2] };
+        };
+
+        let p = seg.data;
+
+        while (p < segEnd) {
 
             const h = header(p);
 
-            if (!h) return null;
+            if (!h) break;
 
-            if (h.id === 0x2AD7B1) {
+            const end = h.unknown ? segEnd : Math.min(segEnd, h.data + h.size);
 
-                let v = 0;
+            if (h.id === 0x1F43B675) {
 
-                for (let i = 0; i < h.size; i++) v = v * 256 + b[h.data + i];
+                // Cluster (puo' avere la grandezza "sconosciuta": finisce al primo elemento che non e' suo)
+                let q = h.data;
+                let tc = 0;
 
-                if (v > 0) scale = v;
+                while (q < end) {
+
+                    const c = header(q);
+
+                    if (!c) { q = end; break; }
+
+                    if (h.unknown && !WEBM_CLUSTER_CHILD.has(c.id)) break;
+
+                    const cEnd = Math.min(end, c.data + c.size);
+
+                    if (c.id === 0xE7) {
+
+                        tc = uint(c.data, cEnd - c.data);
+
+                    } else if (c.id === 0xA3) {
+
+                        const bi = blockInfo(c.data);
+
+                        blocks.push({
+                            old: tc + bi.rel,
+                            key: !!(bi.flags & 0x80),
+                            simple: true,
+                            trackLen: bi.trackLen,
+                            payload: b.slice(c.data, cEnd)
+                        });
+
+                    } else if (c.id === 0xA0) {
+
+                        const kids = [];
+
+                        let block = null;
+                        let ref = null;
+
+                        for (let r = c.data; r < cEnd;) {
+
+                            const k = header(r);
+
+                            if (!k) break;
+
+                            const kEnd = Math.min(cEnd, k.data + k.size);
+
+                            if (k.id === 0xA1) {
+
+                                const bi = blockInfo(k.data);
+
+                                block = { old: tc + bi.rel, trackLen: bi.trackLen };
+
+                                kids.push({ kind: 'block', payload: b.slice(k.data, kEnd) });
+
+                            } else if (k.id === 0xFB) {
+
+                                let v = uint(k.data, kEnd - k.data);
+
+                                if (b[k.data] & 0x80) v -= Math.pow(2, 8 * (kEnd - k.data));
+
+                                ref = v;
+
+                                kids.push({ kind: 'ref' });
+
+                            } else {
+
+                                kids.push({ kind: 'raw', bytes: b.slice(r, kEnd) });
+                            }
+
+                            r = kEnd;
+                        }
+
+                        if (!block) return null;
+
+                        blocks.push({ old: block.old, key: ref === null, simple: false, trackLen: block.trackLen, kids, ref });
+                    }
+
+                    q = cEnd;
+                }
+
+                p = h.unknown ? q : end;
+
+                continue;
             }
 
-            if (h.id === 0x4489) { durPos = h.data; durSize = h.size; }
+            if (h.unknown) return null;
 
-            p = h.data + h.size;
+            if (h.id === 0x1549A966) {
+
+                // Info: se ci sono scala del tempo e durata, la durata si rifa'
+                infoSeen = true;
+
+                for (let r = h.data; r < end;) {
+
+                    const k = header(r);
+
+                    if (!k) return null;
+
+                    const kEnd = Math.min(end, k.data + k.size);
+
+                    if (k.id === 0x2AD7B1) {
+
+                        const v = uint(k.data, kEnd - k.data);
+
+                        if (v > 0) scale = v;
+                    }
+
+                    if (k.id !== 0x4489) infoKept.push(b.slice(r, kEnd));
+
+                    r = kEnd;
+                }
+
+            } else if (h.id === 0x114D9B74 || h.id === 0xEC || h.id === 0x1C53BB6B) {
+
+                // SeekHead, riempimenti e Cues: le posizioni cambiano, si scartano
+
+            } else {
+
+                pre.push(b.slice(p, end));
+            }
+
+            p = end;
         }
 
-        const units = durationMs * 1e6 / scale;
+        if (!infoSeen || !blocks.length) return null;
 
-        // la durata c'e' gia' (di solito a zero): si riscrive sul posto
-        if (durPos >= 0) {
+        // ---- a quale fotogramma mandato corrisponde ogni fotogramma registrato
+        const msOf = (ticks) => ticks * scale / 1e6;
 
-            if (durSize !== 4 && durSize !== 8) return null;
+        const n = times.length;
 
-            const out = new Uint8Array(b);
+        const map = [];
 
-            const dv = new DataView(out.buffer);
+        if (blocks.length === n) {
 
-            if (durSize === 8) dv.setFloat64(durPos, units); else dv.setFloat32(durPos, units);
+            for (let i = 0; i < n; i++) map.push(i);
 
-            return out;
+        } else {
+
+            const off = msOf(blocks[0].old) - submit[0];
+
+            let last = -1;
+
+            for (const blk of blocks) {
+
+                const t = msOf(blk.old) - off;
+
+                let best = -1, bd = Infinity;
+
+                for (let k = last + 1; k < n; k++) {
+
+                    const d = Math.abs(submit[k] - t);
+
+                    if (d < bd) { bd = d; best = k; } else break;
+                }
+
+                map.push(best);
+
+                if (best >= 0) last = best;
+            }
         }
 
-        // altrimenti si aggiunge in fondo a Info: ID 0x4489, grandezza 8, numero a 64 bit
-        const extra = new Uint8Array(11);
+        const ticksOf = (ms) => Math.round(ms * 1e6 / scale);
 
-        extra[0] = 0x44;
-        extra[1] = 0x89;
-        extra[2] = 0x88;
+        const kept = [];
 
-        new DataView(extra.buffer).setFloat64(3, units);
+        blocks.forEach((blk, i) => { if (map[i] >= 0) kept.push({ blk, t: ticksOf(times[map[i]]) }); });
 
-        const newInfoSize = encodeSize(info.size + extra.length, info.sizeLen);
+        if (!kept.length) return null;
 
-        const infoEnd = info.data + info.size;
+        // tempo vecchio -> nuovo (serve a rifare i riferimenti dei fotogrammi)
+        const newOf = new Map();
 
-        const out = new Uint8Array(b.length + extra.length + (newInfoSize.length - info.sizeLen));
+        kept.forEach(({ blk, t }) => newOf.set(blk.old, t));
 
-        let w = 0;
+        // ---- Cluster nuovi: al massimo 30 secondi ciascuno
+        const clusters = [];
 
-        out.set(b.subarray(0, info.data - info.sizeLen), w);
-        w += info.data - info.sizeLen;
+        let cur = null;
 
-        out.set(newInfoSize, w);
-        w += newInfoSize.length;
+        kept.forEach(({ blk, t }, idx) => {
 
-        out.set(b.subarray(info.data, infoEnd), w);
-        w += info.size;
+            if (!cur || t - cur.tc > Math.min(30000, ticksOf(30000))) {
 
-        out.set(extra, w);
-        w += extra.length;
+                cur = { tc: t, items: [] };
 
-        out.set(b.subarray(infoEnd), w);
+                clusters.push(cur);
+            }
 
-        // se il Segment ha una grandezza dichiarata, cresce della stessa quantita'
-        if (!seg.unknown) {
+            const rel = t - cur.tc;
 
-            const grow = extra.length + (newInfoSize.length - info.sizeLen);
+            const payload = blk.simple ? blk.payload : blk.kids.find(k => k.kind === 'block').payload;
 
-            const newSeg = encodeSize(seg.size + grow, seg.sizeLen);
+            const pl = new Uint8Array(payload);
 
-            if (newSeg.length !== seg.sizeLen) return null;
+            pl[blk.trackLen] = (rel >> 8) & 0xff;
+            pl[blk.trackLen + 1] = rel & 0xff;
 
-            out.set(newSeg, seg.data - seg.sizeLen);
-        }
+            if (blk.simple) {
 
-        return out;
+                cur.items.push(ebmlWrap(0xA3, [pl]));
+
+            } else {
+
+                const parts = [];
+
+                for (const k of blk.kids) {
+
+                    if (k.kind === 'block') {
+
+                        parts.push(ebmlWrap(0xA1, [pl]));
+
+                    } else if (k.kind === 'ref') {
+
+                        const target = newOf.has(blk.old + blk.ref)
+                            ? newOf.get(blk.old + blk.ref)
+                            : (idx > 0 ? kept[idx - 1].t : t);
+
+                        parts.push(ebmlWrap(0xFB, [ebmlSInt(target - t)]));
+
+                    } else {
+
+                        parts.push(k.bytes);
+                    }
+                }
+
+                cur.items.push(ebmlWrap(0xA0, parts));
+            }
+        });
+
+        const clusterBytes = clusters.map(c =>
+            ebmlWrap(0x1F43B675, [ebmlWrap(0xE7, [ebmlUInt(c.tc)]), ...c.items])
+        );
+
+        const info = ebmlWrap(0x1549A966, [...infoKept, ebmlWrap(0x4489, [ebmlFloat64(durationMs * 1e6 / scale)])]);
+
+        const children = [info, ...pre, ...clusterBytes];
+
+        let total = 0;
+
+        for (const c of children) total += c.length;
+
+        const segHead = [ebmlIdBytes(0x18538067), ebmlSize(total, 8)];
+
+        let len = ebmlEnd;
+
+        for (const s of segHead) len += s.length;
+
+        const out = new Uint8Array(len + total);
+
+        out.set(b.subarray(0, ebmlEnd), 0);
+
+        let w = ebmlEnd;
+
+        for (const s of segHead) { out.set(s, w); w += s.length; }
+
+        for (const c of children) { out.set(c, w); w += c.length; }
+
+        return { bytes: out, blocks: blocks.length };
 
     } catch (e) {
 
@@ -3366,14 +3680,12 @@ function setWebmDuration(bytes, durationMs) {
 }
 
 
-// ---- VIDEO WebM (registrato in tempo reale dal canvas) ----
+// ---- VIDEO WebM (registrato dal canvas) ----
 //
-// Nessun fotogramma preparato in anticipo: ognuno si disegna nel
-// momento in cui va mostrato (e' veloce), quindi la memoria non
-// dipende dalla durata.
-//
-// Dura quanto la GIF con i suoi tempi: UN giro dell'animazione, e la
-// durata viene scritta nel file.
+// Ogni fotogramma che cambia si disegna con calma, uno dopo l'altro (nessuno viene saltato,
+// anche con immagini grandi), e poi il file viene rimontato con i tempi esatti della GIF:
+// dura quanto la GIF con i suoi tempi (UN giro dell'animazione) e la durata e' scritta nel
+// file. I fotogrammi uguali al precedente non si ricodificano: restano a schermo.
 
 btnVideo.onclick = () => runExport(btnVideo, async (o) => {
 
@@ -3392,113 +3704,125 @@ btnVideo.onclick = () => runExport(btnVideo, async (o) => {
     work.height = height;
     work.getContext('2d');
 
-    const cv = document.createElement('canvas');
-
-    cv.width = width;
-    cv.height = height;
-
-    const ctx = cv.getContext('2d');
-
     const types = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
 
     const mime = types.find(t => MediaRecorder.isTypeSupported(t));
 
-    const stream = cv.captureStream(0);
+    // tempo di inizio di ogni fotogramma = somma dei ritardi della GIF (centesimi di secondo)
+    const starts = [];
 
-    const track = stream.getVideoTracks()[0];
+    let acc = 0;
 
-    const rec = new MediaRecorder(stream, {
-        mimeType: mime,
-        videoBitsPerSecond: 20_000_000
-    });
+    for (const d of delays) { starts.push(acc * 10); acc += d; }
 
-    const chunks = [];
+    const loopMs = acc * 10;
 
-    rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+    // solo i fotogrammi che cambiano davvero
+    const frames = [];
 
-    const stopped = new Promise(resolve => { rec.onstop = resolve; });
+    let lastSig = null;
 
-    // durata del giro = somma dei ritardi della GIF (centesimi di secondo)
-    const loopMs = delays.reduce((a, b) => a + b, 0) * 10;
+    for (let k = 0; k < delays.length; k++) {
 
-    const draw = (k) => {
+        const sig = JSON.stringify(framePieces(plan, k));
 
-        Renderer.renderToCanvas(framePieces(plan, k), plan.box, plan.scale, transparent ? null : o.bgFill, work);
+        if (sig === lastSig) continue;
 
-        ctx.clearRect(0, 0, width, height);
+        lastSig = sig;
 
-        ctx.drawImage(work, 0, 0);
+        frames.push({ k, ms: starts[k] });
+    }
 
-        if (track.requestFrame) track.requestFrame();
+    const times = frames.map(f => f.ms);
+
+    const sleep = (ms) => new Promise(r => setTimeout(r, ms));
+
+    // una registrazione: un fotogramma ogni "pace" ms (almeno), lasciando al codificatore
+    // il tempo di lavorare. I tempi veri non dipendono da questa pausa.
+    const attempt = async (pace, note) => {
+
+        const cv = document.createElement('canvas');
+
+        cv.width = width;
+        cv.height = height;
+
+        const ctx = cv.getContext('2d');
+
+        const stream = cv.captureStream(0);
+
+        const track = stream.getVideoTracks()[0];
+
+        const rec = new MediaRecorder(stream, {
+            mimeType: mime,
+            videoBitsPerSecond: 20_000_000
+        });
+
+        const chunks = [];
+
+        rec.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+
+        const stopped = new Promise(resolve => { rec.onstop = resolve; });
+
+        rec.start(1000);           // consegna i dati ogni secondo invece che tutti alla fine
+
+        const t0 = performance.now();
+
+        const submit = [];
+
+        for (let i = 0; i < frames.length; i++) {
+
+            const s = performance.now();
+
+            submit.push(s - t0);
+
+            Renderer.renderToCanvas(framePieces(plan, frames[i].k), plan.box, plan.scale, transparent ? null : o.bgFill, work);
+
+            ctx.clearRect(0, 0, width, height);
+
+            ctx.drawImage(work, 0, 0);
+
+            if (track.requestFrame) track.requestFrame();
+
+            const cost = performance.now() - s;
+
+            o.onStatus(`Registro il video${note}… ${Math.round(i / frames.length * 100)}%`);
+
+            await sleep(Math.max(pace, Math.min(400, cost * 2 + 20)));
+        }
+
+        await sleep(200);
+
+        rec.stop();
+
+        await stopped;
+
+        stream.getTracks().forEach(t => t.stop());
+
+        return { raw: new Uint8Array(await new Blob(chunks).arrayBuffer()), submit };
     };
 
-    rec.start(1000);           // consegna i dati ogni secondo invece che tutti alla fine
+    // immagini grandi: piu' pausa. Se il browser salta lo stesso qualche fotogramma
+    // si riprova piu' piano (al massimo 3 volte).
+    let pace = Math.max(40, Math.min(200, Math.round(width * height / 25000)));
 
-    draw(0);
+    let result = null;
 
-    const t0 = performance.now();
+    for (let tries = 0; tries < 3; tries++) {
 
-    await new Promise(resolve => {
+        const rec = await attempt(pace, tries ? ' (riprovo piu\' piano)' : '');
 
-        let shown = 0;
+        const res = retimeWebm(rec.raw, times, rec.submit, loopMs);
 
-        const step = () => {
+        result = res ? res.bytes : rec.raw;
 
-            const el = performance.now() - t0;
+        // file non riconosciuto, oppure nessun fotogramma perso: basta
+        if (!res || res.blocks >= times.length) break;
 
-            if (el >= loopMs) {
-                resolve();
-                return;
-            }
-
-            // fotogramma corrente in base al tempo trascorso
-            let local = el;
-            let i = 0;
-
-            while (i < delays.length - 1 && local >= delays[i] * 10) {
-                local -= delays[i] * 10;
-                i++;
-            }
-
-            if (i !== shown) {
-                shown = i;
-                draw(i);
-            }
-
-            o.onStatus(`Registro il video… ${Math.round(el / loopMs * 100)}%`);
-
-            // manca meno di un passo dello schermo: si aspetta esattamente il resto
-            if (loopMs - el < 17) {
-                setTimeout(resolve, loopMs - el);
-                return;
-            }
-
-            requestAnimationFrame(step);
-        };
-
-        step();
-    });
-
-    // ultimo fotogramma ancora una volta: segna la fine esatta del giro
-    // (il file non ha altro dopo, quindi non si aggiunge niente alla durata)
-    draw(delays.length - 1);
-
-    await new Promise(r => setTimeout(r, 60));
-
-    rec.stop();
-
-    await stopped;
-
-    const raw = new Blob(chunks, { type: 'video/webm' });
-
-    let blob = raw;
-
-    const fixed = setWebmDuration(new Uint8Array(await raw.arrayBuffer()), loopMs);
-
-    if (fixed) blob = new Blob([fixed], { type: 'video/webm' });
+        pace = Math.min(600, pace * 2.5);
+    }
 
     await saveFile(
-        blob,
+        new Blob([result], { type: 'video/webm' }),
         `${fileLabel()}.webm`, 'Video WebM', 'video/webm', '.webm'
     );
 });
