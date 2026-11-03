@@ -237,7 +237,8 @@ function rebuildAll() {
 
 function fileLabel() {
 
-    return state.current === 'all' ? 'completa' : state.current;
+    // nome dei file esportati: l'animazione completa si chiama "default"
+    return state.current === 'all' ? 'default' : state.current;
 }
 
 Object.values(repeatInputs).forEach(el => el.addEventListener('change', () => {
