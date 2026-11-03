@@ -19,9 +19,14 @@
             <div class="upload-group">
                 <h3>1. File Base (Obbligatori)</h3>
                 <label class="custom-file-upload" id="multiDrop"
-                    title="Seleziona insieme PNG, CGG e i CGS di idle, atk e move (Ctrl+A nella finestra dei file), oppure trascinali sulla pagina. Il tipo di ogni file si riconosce dal nome: ...cgg..., ...idle..., ...atk..., ...move...">
-                    <input type="file" id="multiFiles" multiple accept=".png,.jpg,.jpeg,.csv,.cgg,.cgs"> 📥 Carica TUTTI
+                    title="Seleziona insieme PNG, CGG e i CGS di idle, atk e move (Ctrl+A nella finestra dei file), oppure trascinali sulla pagina. Il tipo di ogni file si riconosce dal nome: ...cgg..., ...idle..., ...atk..., ...move.... Per un'unità in formato .sam seleziona il file .sam insieme a tutti i suoi PNG.">
+                    <input type="file" id="multiFiles" multiple accept=".png,.jpg,.jpeg,.csv,.cgg,.cgs,.sam"> 📥 Carica
+                    TUTTI
                     i file insieme
+                </label>
+                <label class="custom-file-upload" id="multiDirDrop"
+                    title="Per le unità in formato .sam: scegli la cartella con il file .sam e tutti i suoi frammenti PNG (le sottocartelle si leggono da sole). Si può anche trascinare la cartella sulla pagina.">
+                    <input type="file" id="multiDir" webkitdirectory multiple> 📁 Carica CARTELLA (.sam + PNG)
                 </label>
                 <div id="multiInfo"
                     style="font-size:11px;line-height:1.5;color:#9ca3af;white-space:pre-line;margin-bottom:10px;word-break:break-all">
@@ -103,6 +108,10 @@
                     </label>
                     <label title="Tiene ferma l'ombra: il personaggio non scivola di lato tra un frame e l'altro.">
                         <input type="checkbox" id="lock" checked> Blocca a terra (ombra ferma)
+                    </label>
+                    <label
+                        title="Le unità che fluttuano hanno l'ombra nel gioco, ma nel CGG molti frame (di solito l'idle) non hanno il pezzo ombra. Con questa casella l'ombra che l'unità ha già in altri frame (stessa forma, posizione e trasparenza) viene aggiunta ai frame che ne sono senza, sia a schermo sia nei file esportati. Il CGG non viene modificato. Se l'unità non ha nessuna ombra nel CGG non c'è niente da copiare.">
+                        <input type="checkbox" id="autoShadow" checked> Ombra a terra se manca (unità che fluttuano)
                     </label>
                 </div>
 

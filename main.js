@@ -3,6 +3,7 @@ import { initAssembler } from './assembler.js';
 import { createGifWriter, createPaletteBuilder } from './gif.js';
 import { Parser } from './parser.js';
 import { Renderer } from './renderer.js';
+import { buildSamUnit } from './sam.js';
 import {
     TICK_MS,
     composeFrame,
@@ -64,6 +65,15 @@ const state = {
         all: []
     },
 
+    // animazioni dell'unita' caricata (nomi interni, nell'ordine): idle, move, atk
+    // per i file CGG / CGS, quelle del file per un .sam (Idle, Move, Attack, Dead...)
+    animNames: ['idle', 'move', 'atk'],
+
+    // true se l'unita' viene da un file .sam (frammenti PNG, niente CGG)
+    samMode: false,
+
+    // CGG cosi' com'e' nel file e CGG in uso (con l'ombra aggiunta dove manca)
+    framesDBOrig: [],
     framesDB: [],
 
     // spostamento per frame che tiene fermo il punto d'appoggio
@@ -194,13 +204,16 @@ function rebuildAll() {
 
     const all = [];
 
-    for (const name of ['idle', 'move', 'atk']) {
+    for (const name of state.animNames) {
 
         const seq = state.sequences[name];
 
         if (!seq || seq.length === 0) continue;
 
-        const n = Math.max(0, Math.min(20, parseInt(repeatInputs[name].value, 10) || 0));
+        // le ripetizioni si scelgono solo per idle / move / atk; le altre (Dead...) una volta
+        const n = repeatInputs[name]
+            ? Math.max(0, Math.min(20, parseInt(repeatInputs[name].value, 10) || 0))
+            : 1;
 
         for (let r = 0; r < n; r++) all.push(...seq);
     }
@@ -263,6 +276,107 @@ function activeShifts() {
 
     return state.lock ? state.shifts : null;
 }
+
+
+// ============================================================
+// OMBRA A TERRA SE MANCA
+//
+// Le unita' che fluttuano hanno l'ombra nel gioco, ma nel CGG molte
+// righe (spesso tutte quelle dell'idle) non hanno il pezzo ombra. Si
+// prende l'ombra che l'unita' ha gia' in altre righe (ritaglio, posizione
+// e opacita' piu' comuni) e si aggiunge come ultimo pezzo, cioe' sotto
+// tutto, alle righe che ne sono senza. Il file CGG non viene toccato.
+// ============================================================
+
+const chkAutoShadow = document.getElementById('autoShadow');
+
+function withMissingShadows(db) {
+
+    const isShadow = makeShadowTest();
+
+    const stat = new Map();
+
+    for (const pieces of db) {
+
+        for (const p of pieces || []) {
+
+            if (!isShadow(p)) continue;
+
+            const key = p.sx + ',' + p.sy + ',' + p.w + ',' + p.h;
+
+            let e = stat.get(key);
+
+            if (!e) stat.set(key, e = { p, n: 0, xs: [], ys: [], ops: [] });
+
+            e.n++;
+            e.xs.push(Number(p.x) || 0);
+            e.ys.push(Number(p.y) || 0);
+            e.ops.push(Number.isFinite(p.opacity) ? p.opacity : 100);
+        }
+    }
+
+    // nessuna ombra in tutto il CGG: non c'e' niente da copiare
+    if (!stat.size) return db;
+
+    const best = [...stat.values()].sort((a, b) => b.n - a.n)[0];
+
+    const median = (a) => [...a].sort((x, y) => x - y)[a.length >> 1];
+
+    const template = {
+        ...best.p,
+        x: median(best.xs),
+        y: median(best.ys),
+        opacity: median(best.ops),
+        rotate: 0,
+        blendMode: 0
+    };
+
+    let added = 0;
+
+    const out = db.map(pieces => {
+
+        if (!pieces || !pieces.length || pieces.some(isShadow)) return pieces;
+
+        added++;
+
+        return [...pieces, { ...template }];
+    });
+
+    return added ? out : db;
+}
+
+function applyAutoShadow() {
+
+    if (!state.framesDBOrig.length) return;
+
+    // unita' .sam: si disegna cosi' com'e'
+    if (state.samMode) {
+
+        state.framesDB = state.framesDBOrig;
+
+        return;
+    }
+
+    state.framesDB = chkAutoShadow.checked
+        ? withMissingShadows(state.framesDBOrig)
+        : state.framesDBOrig;
+}
+
+chkAutoShadow.addEventListener(
+    'change',
+    () => {
+
+        applyAutoShadow();
+
+        saveExportPrefs();
+
+        chkAutoShadow.blur();
+
+        renderCurrentFrame();
+
+        updateExportInfo();
+    }
+);
 
 
 // ============================================================
@@ -458,6 +572,14 @@ function loadMany(fileList) {
 
     const files = [...fileList];
 
+    // un file .sam (con i suoi frammenti PNG): modo .sam
+    if (files.some(f => /\.sam$/i.test(f.name))) {
+
+        loadSamFiles(files);
+
+        return;
+    }
+
     const found = {};
     const doubles = [];
     const unknown = [];
@@ -562,8 +684,148 @@ window.addEventListener('drop', (e) => {
 
     if (assemblerOpen()) return;
 
-    loadMany(e.dataTransfer.files);
+    // si possono trascinare anche cartelle intere (un .sam con i suoi PNG)
+    filesFromDrop(e.dataTransfer).then(list => loadMany(list));
 });
+
+
+// ============================================================
+// CARICAMENTO DI UN'UNITA' .SAM
+//
+// Un .sam e i suoi frammenti PNG (si possono scegliere i file insieme,
+// una cartella, o trascinarli sulla pagina). Se nel gruppo ci sono piu'
+// .sam si carica il primo: i PNG di ogni frammento si cercano per nome,
+// preferendo la cartella del .sam.
+// ============================================================
+
+const pathOf = (f) => f._path || f.webkitRelativePath || f.name;
+
+// file di un trascinamento, cartelle comprese (le voci vanno lette subito, prima di qualsiasi await)
+async function filesFromDrop(dt) {
+
+    const entries = [];
+    const out = [];
+
+    for (const it of dt.items || []) {
+
+        if (it.kind !== 'file') continue;
+
+        const en = it.webkitGetAsEntry && it.webkitGetAsEntry();
+
+        if (en) entries.push(en);
+        else {
+            const f = it.getAsFile();
+            if (f) out.push(f);
+        }
+    }
+
+    if (!entries.length && !out.length) return [...(dt.files || [])];
+
+    const walk = async (en) => {
+
+        try {
+
+            if (en.isFile) {
+
+                const file = await new Promise((ok, ko) => en.file(ok, ko));
+
+                file._path = en.fullPath.replace(/^\//, '');
+
+                out.push(file);
+
+            } else if (en.isDirectory) {
+
+                const reader = en.createReader();
+
+                for (; ;) {
+
+                    const batch = await new Promise((ok, ko) => reader.readEntries(ok, ko));
+
+                    if (!batch.length) break;
+
+                    for (const child of batch) await walk(child);
+                }
+            }
+
+        } catch (e) { /* un file illeggibile non ferma gli altri */ }
+    };
+
+    for (const en of entries) await walk(en);
+
+    return out;
+}
+
+async function loadSamFiles(files) {
+
+    const sams = files.filter(f => /\.sam$/i.test(f.name));
+
+    const samFile = sams[0];
+
+    const entries = files
+        .filter(f => /\.png$/i.test(f.name))
+        .map(f => ({ file: f, path: pathOf(f) }));
+
+    multiInfo.innerText = `Lettura di ${samFile.name} e di ${entries.length} PNG…`;
+
+    try {
+
+        const unit = await buildSamUnit(await samFile.arrayBuffer(), entries, pathOf(samFile));
+
+        if (!unit.framesDB.length) throw new Error('nessun frame nel .sam');
+
+        Renderer.image = unit.atlas;
+
+        state.framesDBOrig = unit.framesDB;
+        state.framesDB = unit.framesDB;
+
+        // niente ombra da cui ricavare il blocco a terra
+        state.shifts = unit.framesDB.map(() => ({ x: 0, y: 0 }));
+
+        setSamMode(unit);
+
+        rebuildAll();
+
+        const notes = [];
+
+        if (sams.length > 1) notes.push(`⚠ Carico solo il primo .sam, ignorati: ${sams.slice(1).map(f => f.name).join(', ')}`);
+
+        if (unit.missing.length) notes.push(`⚠ Mancano ${unit.missing.length} PNG su ${unit.spriteCount} (es. ${unit.missing[0]}): quei pezzi non si vedono. Aggiungi la cartella che li contiene.`);
+
+        if (unit.warnings.length) notes.push(`⚠ ${unit.warnings.length} frame del .sam non decodificati (es. ${unit.warnings[0]})`);
+
+        multiInfo.innerText = [
+            `✔ SAM: ${samFile.name}`,
+            `✔ ${unit.spriteCount - unit.missing.length} / ${unit.spriteCount} frammenti PNG`,
+            'Animazioni: ' + unit.order.map(k => `${unit.labels[k]} ${unit.sequences[k].length}`).join(' · '),
+            ...notes
+        ].join('\n');
+
+        state.downloadCount = 1;
+
+        beginPlayback(unit.order);
+
+    } catch (error) {
+
+        console.error('Errore .sam:', error);
+
+        multiInfo.innerText = `⚠ ${samFile.name}: ${error.message}`;
+    }
+}
+
+// cartella intera (anche con sottocartelle)
+const multiDir = document.getElementById('multiDir');
+
+if (multiDir) {
+
+    multiDir.addEventListener('change', (event) => {
+
+        loadMany(event.target.files);
+
+        event.target.value = '';
+
+        event.target.parentElement.classList.remove('loaded');
+    });
+}
 
 
 // ============================================================
@@ -873,6 +1135,147 @@ selectAnim.onchange =
 
 
 // ============================================================
+// PARTENZA DELL'ANIMAZIONE (dopo aver caricato un'unita')
+// ============================================================
+
+function beginPlayback(firstOrder = ['idle', 'atk', 'move']) {
+
+    // ====================================================
+    // RESET ANIMAZIONE
+    // ====================================================
+
+    const firstAvailable =
+        firstOrder
+            .find(n => state.sequences[n] && state.sequences[n].length > 0);
+
+
+    if (
+        (!state.sequences[state.current] || state.sequences[state.current].length === 0) &&
+        firstAvailable
+    ) {
+
+        state.current = firstAvailable;
+
+        selectAnim.value = firstAvailable;
+    }
+
+
+    state.isPlaying = true;
+
+    state.isPaused = false;
+
+    state.frameIndex = 0;
+
+    state.ticks = 0;
+
+    state.accum = 0;
+
+    state.lastTime =
+        performance.now();
+
+
+    // ====================================================
+    // RESET DOWNLOAD
+    // ====================================================
+
+    state.downloadCount = 1;
+
+
+    // ====================================================
+    // RESET UI
+    // ====================================================
+
+    btnPause.innerText =
+        "⏸ PAUSA";
+
+
+    // ====================================================
+    // PRIMO FRAME
+    // ====================================================
+
+    updateTimelineUI();
+
+    renderCurrentFrame();
+
+
+    // ====================================================
+    // AVVIO GAME LOOP (una sola volta)
+    // ====================================================
+
+    if (!loopStarted) {
+
+        loopStarted = true;
+
+        requestAnimationFrame(
+            gameLoop
+        );
+    }
+}
+
+
+// ============================================================
+// MODO CGG / MODO .SAM
+//
+// Con i file CGG / CGS le animazioni sono sempre idle, atk, move. Con un
+// .sam sono quelle che ci sono nel file (Idle, Move, Attack, Dead...): il
+// menu si riempie di conseguenza.
+// ============================================================
+
+function fillAnimOptions(list) {
+
+    selectAnim.innerHTML = '';
+
+    for (const [value, label] of list) selectAnim.add(new Option(label, value));
+}
+
+function setStandardMode() {
+
+    state.samMode = false;
+
+    state.animNames = ['idle', 'move', 'atk'];
+
+    state.sequences = { idle: [], atk: [], move: [], all: [] };
+
+    if (!['idle', 'atk', 'move', 'all'].includes(state.current)) state.current = 'idle';
+
+    fillAnimOptions([
+        ['idle', 'Idle'],
+        ['atk', 'Attack'],
+        ['move', 'Move'],
+        ['all', 'Completa (idle + move + attack)']
+    ]);
+
+    selectAnim.value = state.current;
+
+    // sono opzioni dei file CGG (ombra)
+    chkAutoShadow.disabled = false;
+    chkLock.disabled = false;
+}
+
+function setSamMode(unit) {
+
+    state.samMode = true;
+
+    state.animNames = unit.order;
+
+    state.sequences = { ...unit.sequences, all: [] };
+
+    fillAnimOptions([
+        ...unit.order.map(k => [k, `${unit.labels[k]} (${unit.sequences[k].length} frame)`]),
+        ['all', 'Completa (tutte le animazioni)']
+    ]);
+
+    // niente CGG: l'ombra aggiunta e il blocco a terra non c'entrano
+    chkAutoShadow.disabled = true;
+    chkLock.disabled = true;
+
+    if (state.current !== 'all' && !state.sequences[state.current]) state.current = unit.order[0];
+
+    selectAnim.value = state.current;
+}
+
+
+// ============================================================
 // START
 // ============================================================
 
@@ -932,22 +1335,31 @@ btnStart.onclick = async () => {
         );
 
 
+        // si torna al modo CGG (se prima c'era un'unita' .sam)
+        setStandardMode();
+
+
         // ====================================================
         // PARSING CGG
         // ====================================================
 
-        state.framesDB =
+        state.framesDBOrig =
             Parser.parseCGG(
                 await files.cgg.text()
             );
 
+        state.framesDB = state.framesDBOrig;
 
-        // punto d'appoggio di ogni frame (ombra)
+
+        // punto d'appoggio di ogni frame (ombra): si calcola sul CGG
+        // originale, l'ombra aggiunta dopo sta ferma dov'e'
 
         state.shifts =
             computeGroundShifts(
-                state.framesDB
+                state.framesDBOrig
             );
+
+        applyAutoShadow();
 
 
         // ====================================================
@@ -967,77 +1379,7 @@ btnStart.onclick = async () => {
 
         rebuildAll();
 
-        // ====================================================
-        // RESET ANIMAZIONE
-        // ====================================================
-
-        const firstAvailable =
-            ['idle', 'atk', 'move']
-                .find(n => state.sequences[n].length > 0);
-
-
-        if (
-            state.sequences[state.current].length === 0 &&
-            firstAvailable
-        ) {
-
-            state.current = firstAvailable;
-
-            selectAnim.value = firstAvailable;
-        }
-
-
-        state.isPlaying = true;
-
-        state.isPaused = false;
-
-        state.frameIndex = 0;
-
-        state.ticks = 0;
-
-        state.accum = 0;
-
-        state.lastTime =
-            performance.now();
-
-
-        // ====================================================
-        // RESET DOWNLOAD
-        // ====================================================
-
-        state.downloadCount = 1;
-
-
-        // ====================================================
-        // RESET UI
-        // ====================================================
-
-        btnPause.innerText =
-            "⏸ PAUSA";
-
-
-        // ====================================================
-        // PRIMO FRAME
-        // ====================================================
-
-        updateTimelineUI();
-
-        renderCurrentFrame();
-
-
-        // ====================================================
-        // AVVIO GAME LOOP (una sola volta)
-        // ====================================================
-
-        if (!loopStarted) {
-
-            loopStarted = true;
-
-            requestAnimationFrame(
-                gameLoop
-            );
-        }
-
+        beginPlayback();
 
     } catch (error) {
 
@@ -1403,7 +1745,7 @@ document.getElementById('growArea').onclick = () => {
 
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
 
-    for (const name of ['idle', 'move', 'atk']) {
+    for (const name of state.animNames) {
 
         const seq = state.sequences[name];
 
@@ -1569,7 +1911,7 @@ function screenBox() {
 
         const shifts = activeShifts();
 
-        for (const name of ['idle', 'move', 'atk']) {
+        for (const name of state.animNames) {
 
             const seq = state.sequences[name];
 
@@ -1604,7 +1946,7 @@ function screenBox() {
 
         let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
 
-        for (const name of ['idle', 'move', 'atk']) {
+        for (const name of state.animNames) {
 
             const seq = state.sequences[name];
 
@@ -1768,6 +2110,8 @@ try {
 
     if (v && v.smooth === false) document.getElementById('exportSmooth').checked = false;
 
+    if (v && v.autoShadow === false) chkAutoShadow.checked = false;
+
     if (v && v.gifLimit === false) document.getElementById('gifLimit').checked = false;
     if (v && Number(v.gifLimitMp) > 0) document.getElementById('gifLimitMp').value = v.gifLimitMp;
 
@@ -1804,7 +2148,8 @@ function saveExportPrefs() {
             bgAlpha: bgEls.num.value,
             bgAll: bgEls.all.checked,
             gifSoft: document.getElementById('gifSoft').value,
-            gifSoftV: 2
+            gifSoftV: 2,
+            autoShadow: chkAutoShadow.checked
         }));
 
     } catch (e) { /* ignoro */ }
@@ -1880,7 +2225,7 @@ function exportBox(shifts) {
         const box = fixedBox();
 
         // avviso se l'area e' troppo piccola per qualche frame
-        for (const name of ['idle', 'move', 'atk']) {
+        for (const name of state.animNames) {
 
             const seq = state.sequences[name];
 
@@ -1901,7 +2246,7 @@ function exportBox(shifts) {
 
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
 
-    for (const name of ['idle', 'move', 'atk']) {
+    for (const name of state.animNames) {
 
         const seq = state.sequences[name];
 
@@ -2082,11 +2427,17 @@ function makeShadowTest() {
 
         if (!(p.h >= 2 && p.w >= 8 && p.w >= p.h * 2 && p.w <= 160)) return false;
 
-        if (Number(p.rotate)) return false;
+        if (Number(p.rotate) || Number(p.rad)) return false;
 
-        const bottom = (Number(p.y) || 0) + p.h;
+        // CGG: i piedi sono nell'origine, quindi l'ombra ha il bordo basso vicino a 0.
+        // Nei .sam l'origine sta dove vuole l'unita' (l'ombra puo' essere anche a y = 100):
+        // li' contano solo forma e colore del ritaglio.
+        if (!p.sam) {
 
-        if (bottom < -20 || bottom > 40) return false;
+            const bottom = (Number(p.y) || 0) + p.h;
+
+            if (bottom < -20 || bottom > 40) return false;
+        }
 
         return darkSprite(p);
     };

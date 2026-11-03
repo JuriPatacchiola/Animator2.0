@@ -179,6 +179,16 @@ function placed(pieces, off) {
         .map((p, i) => ({ ...p, x: (Number(p.x) || 0) + off.x, y: (Number(p.y) || 0) + off.y }));
 }
 
+// segno del determinante della matrice di un pezzo .sam (specchiato = -1)
+function handed(p) {
+
+    const m = p.mat;
+
+    if (!m) return 1;
+
+    return m[0] * m[3] - m[1] * m[2] < 0 ? -1 : 1;
+}
+
 /*
     Passaggio morbido tra due frame (t da 0 a 1):
 
@@ -213,6 +223,9 @@ export function blendPieces(a, b, t, offA, offB, maxMove = 30) {
 
             if (used.has(m) || keysB[m] !== key) continue;
 
+            // formato .sam: un pezzo specchiato non diventa quello non specchiato a meta' strada
+            if (p.sam && handed(p) !== handed(b[m])) continue;
+
             const d = Math.hypot(
                 (Number(b[m].x) || 0) + offB.x - ax,
                 (Number(b[m].y) || 0) + offB.y - ay
@@ -230,14 +243,30 @@ export function blendPieces(a, b, t, offA, offB, maxMove = 30) {
 
             const q = b[found];
 
-            out.push({
+            const moved = {
                 ...p,
                 x: lerp(ax, (Number(q.x) || 0) + offB.x, t),
                 y: lerp(ay, (Number(q.y) || 0) + offB.y, t),
                 rotate: lerpAngle(Number(p.rotate) || 0, Number(q.rotate) || 0, t),
                 opacity: lerp(opacityOf(p), opacityOf(q), t),
                 _order: i
-            });
+            };
+
+            // formato .sam: anche rotazione (radianti, per la via piu' corta) e matrice
+            if (p.sam && q.sam) {
+
+                moved.rad = lerpAngle((Number(p.rad) || 0) * 180 / Math.PI, (Number(q.rad) || 0) * 180 / Math.PI, t) * Math.PI / 180;
+
+                if (p.mat || q.mat) {
+
+                    const ma = p.mat || [1, 0, 0, 1];
+                    const mb = q.mat || [1, 0, 0, 1];
+
+                    moved.mat = ma.map((v, k) => lerp(v, mb[k], t));
+                }
+            }
+
+            out.push(moved);
 
             return;
         }
@@ -318,6 +347,30 @@ export function sequenceBounds(sequence, framesDB, shifts) {
         if (!pieces) continue;
 
         for (const p of placed(pieces, offsetFor(f, shifts))) {
+
+            // pezzo del formato .sam: gli angoli del PNG, ruotati e deformati attorno all'origine
+            if (p.sam) {
+
+                const m = p.mat || [1, 0, 0, 1];
+                const r = Number(p.rad) || 0;
+                const c = Math.cos(r), s = Math.sin(r);
+
+                for (const [px, py] of [
+                    [p.ox, p.oy], [p.ox + p.w, p.oy], [p.ox, p.oy + p.h], [p.ox + p.w, p.oy + p.h]
+                ]) {
+
+                    const ax = m[0] * px + m[2] * py;
+                    const ay = m[1] * px + m[3] * py;
+
+                    const X = p.x + ax * c - ay * s;
+                    const Y = p.y + ax * s + ay * c;
+
+                    x0 = Math.min(x0, X); x1 = Math.max(x1, X);
+                    y0 = Math.min(y0, Y); y1 = Math.max(y1, Y);
+                }
+
+                continue;
+            }
 
             const cx = p.x + p.w / 2;
             const cy = p.y + p.h / 2;

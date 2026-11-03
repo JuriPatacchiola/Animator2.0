@@ -299,6 +299,61 @@ export const Renderer = {
 
 
             // -------------------------------------------------
+            // PEZZO DEL FORMATO .SAM
+            //
+            // x, y = punto d'origine del frammento; ox, oy = dove sta
+            // l'angolo alto-sinistro del PNG rispetto all'origine.
+            // Rotazione e matrice (specchi, scale) girano attorno
+            // all'origine, non al centro del PNG.
+            // -------------------------------------------------
+
+            if (piece.sam) {
+
+                ctx.translate(
+                    (Number(piece.x) || 0) + frameOffsetX,
+                    (Number(piece.y) || 0) + frameOffsetY
+                );
+
+                if (piece.rad) {
+                    ctx.rotate(piece.rad);
+                }
+
+                const m = piece.mat;
+
+                if (m) {
+                    ctx.transform(m[0], m[1], m[2], m[3], 0, 0);
+                }
+
+                // un pezzo ruotato o deformato ha bisogno dell'interpolazione,
+                // altrimenti i bordi vengono a scalini; specchi e scale
+                // intere restano nitidi
+                const straight = !piece.rad && (!m ||
+                    (Math.abs(Math.abs(m[0]) - 1) < 1e-6 && Math.abs(m[1]) < 1e-6 &&
+                        Math.abs(m[2]) < 1e-6 && Math.abs(Math.abs(m[3]) - 1) < 1e-6));
+
+                if (!straight) {
+                    ctx.imageSmoothingEnabled = true;
+                }
+
+                ctx.drawImage(
+                    this.image,
+                    piece.sx,
+                    piece.sy,
+                    piece.w,
+                    piece.h,
+                    piece.ox || 0,
+                    piece.oy || 0,
+                    piece.w,
+                    piece.h
+                );
+
+                ctx.restore();
+
+                continue;
+            }
+
+
+            // -------------------------------------------------
             // POSIZIONE DEL PEZZO
             // -------------------------------------------------
 
