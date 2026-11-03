@@ -54,7 +54,10 @@ export function pieceKey(p) {
 
 export function findShadowKeys(framesDB) {
 
-    if (framesDB.length < 2) return null;
+    // le righe vuote (posti non usati del CGG) non contano
+    const used = framesDB.filter(pieces => pieces && pieces.length).length;
+
+    if (used < 2) return null;
 
     const count = new Map();
 
@@ -76,7 +79,7 @@ export function findShadowKeys(framesDB) {
     const covered = top.reduce((sum, e) => sum + e[1], 0);
 
     // se non c'e' un'ombra riconoscibile non si tocca niente
-    if (covered / framesDB.length < 0.7 || top.some(e => e[1] < 2)) return null;
+    if (covered / used < 0.7 || top.some(e => e[1] < 2)) return null;
 
     return new Set(top.map(e => e[0]));
 }

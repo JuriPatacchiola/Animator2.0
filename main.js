@@ -7,9 +7,7 @@ import {
     TICK_MS,
     composeFrame,
     computeGroundShifts,
-    findShadowKeys,
     frameDuration,
-    pieceKey,
     sampleSequence,
     sequenceBounds,
     sequenceTotalTicks
@@ -1785,9 +1783,10 @@ try {
 
     if (v && v.bgAll) bgEls.all.checked = true;
 
-    // vecchie versioni salvavano true/false: true = default, false = nessun puntino
-    if (v && (v.gifSoft === 'all' || v.gifSoft === 'off' || v.gifSoft === 'shadow')) document.getElementById('gifSoft').value = v.gifSoft;
-    else if (v && v.gifSoft === false) document.getElementById('gifSoft').value = 'off';
+    // la scelta salvata vale solo se fatta con questa versione (gifSoftV 2): le
+    // vecchie versioni mettevano i puntini su tutto, e la scelta restava
+    // salvata nel browser anche dopo l'aggiornamento
+    if (v && v.gifSoftV === 2 && (v.gifSoft === 'all' || v.gifSoft === 'off' || v.gifSoft === 'shadow')) document.getElementById('gifSoft').value = v.gifSoft;
 
 } catch (e) { /* ignoro */ }
 
@@ -1804,7 +1803,8 @@ function saveExportPrefs() {
             bg: bgEls.color.value,
             bgAlpha: bgEls.num.value,
             bgAll: bgEls.all.checked,
-            gifSoft: document.getElementById('gifSoft').value
+            gifSoft: document.getElementById('gifSoft').value,
+            gifSoftV: 2
         }));
 
     } catch (e) { /* ignoro */ }
@@ -1997,10 +1997,99 @@ function exportPlan(scale, maxMp = 0) {
     // frame intermedi: si sceglie qui, a prescindere dal "Morbido" dello schermo
     const smooth = document.getElementById('exportSmooth').checked;
 
-    // ritagli dell'ombra (per la GIF con la sola ombra a puntini)
-    const shadowKeys = findShadowKeys(state.framesDB);
+    // riconoscimento dell'ombra (per la GIF con la sola ombra a puntini)
+    const isShadow = makeShadowTest();
 
-    return { sequence, shifts, box, scale, width, height, totalTicks, totalCs, smooth, shadowKeys };
+    return { sequence, shifts, box, scale, width, height, totalTicks, totalCs, smooth, isShadow };
+}
+
+/*
+    Come si riconosce l'ombra, per QUALSIASI unita' (ogni CGG e' fatto a
+    modo suo: l'ombra non e' sempre l'ultimo pezzo, non ha sempre le stesse
+    misure, ci sono righe vuote...). Si guarda il ritaglio dello sheet:
+
+    - e' un'ellisse bassa e larga (larghezza almeno il doppio dell'altezza);
+    - e' scura (nera o grigio scuro: bagliori, fuoco, fumo, personaggio sono
+      chiari o colorati);
+    - sta a terra (il bordo basso e' vicino all'origine del personaggio);
+    - e' a fusione normale (i bagliori sono additivi).
+
+    Tutto il resto resta netto, senza puntini.
+*/
+
+function makeShadowTest() {
+
+    const img = Renderer.image;
+
+    const cache = new Map();
+
+    let cv = null;
+
+    const darkSprite = (p) => {
+
+        const key = p.sx + ',' + p.sy + ',' + p.w + ',' + p.h;
+
+        let v = cache.get(key);
+
+        if (v !== undefined) return v;
+
+        v = false;
+
+        try {
+
+            if (!cv) cv = document.createElement('canvas');
+
+            cv.width = p.w;
+            cv.height = p.h;
+
+            const cx = cv.getContext('2d', { willReadFrequently: true });
+
+            cx.clearRect(0, 0, p.w, p.h);
+            cx.drawImage(img, p.sx, p.sy, p.w, p.h, 0, 0, p.w, p.h);
+
+            const d = cx.getImageData(0, 0, p.w, p.h).data;
+
+            let sumA = 0, sumL = 0, maxC = 0;
+
+            for (let i = 0; i < d.length; i += 4) {
+
+                const a = d[i + 3];
+
+                if (a < 8) continue;
+
+                sumA += a;
+                sumL += (d[i] + d[i + 1] + d[i + 2]) / 3 * a;
+
+                // i pixel quasi trasparenti hanno colori imprecisi: non contano
+                if (a >= 64) maxC = Math.max(maxC, d[i], d[i + 1], d[i + 2]);
+            }
+
+            v = sumA > 0 && sumL / sumA <= 110 && maxC <= 150;
+
+        } catch (e) {
+
+            v = false;
+        }
+
+        cache.set(key, v);
+
+        return v;
+    };
+
+    return (p) => {
+
+        if (!img || !p || p.blendMode === 1) return false;
+
+        if (!(p.h >= 2 && p.w >= 8 && p.w >= p.h * 2 && p.w <= 160)) return false;
+
+        if (Number(p.rotate)) return false;
+
+        const bottom = (Number(p.y) || 0) + p.h;
+
+        if (bottom < -20 || bottom > 40) return false;
+
+        return darkSprite(p);
+    };
 }
 
 function planFrames(plan, fps) {
@@ -2110,12 +2199,10 @@ function framePixels(plan, k, mode, bg, canvas, maskCanvas, alpha = 1) {
             l'ombra, che sta sotto, e' semitrasparente a puntini.
         */
 
-        const keys = plan.shadowKeys;
+        const body = [];
+        const shad = [];
 
-        const isShadow = (p) => keys && keys.has(pieceKey(p));
-
-        const body = keys ? pieces.filter(p => !isShadow(p)) : pieces;
-        const shad = keys ? pieces.filter(isShadow) : [];
+        for (const p of pieces) (plan.isShadow(p) ? shad : body).push(p);
 
         Renderer.renderToCanvas(body, plan.box, plan.scale, null, canvas);
 
