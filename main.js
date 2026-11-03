@@ -3164,11 +3164,215 @@ btnApng.onclick = () => runExport(btnApng, async (o) => {
 });
 
 
+/*
+    Il WebM registrato dal browser non dice quanto dura (manca la durata nell'intestazione):
+    i lettori lo trattano come infinito, non si puo' andare avanti e indietro e un sito
+    che lo riproduce non sa dove finisce. Qui si scrive la durata vera dentro il file.
+    Se qualcosa non torna il file resta com'e'.
+*/
+
+function setWebmDuration(bytes, durationMs) {
+
+    try {
+
+        const b = bytes;
+
+        const readId = (p) => {
+
+            let n = 1, m = 0x80;
+
+            while (n <= 4 && !(b[p] & m)) { m >>= 1; n++; }
+
+            if (n > 4 || p + n > b.length) return null;
+
+            let v = 0;
+
+            for (let i = 0; i < n; i++) v = v * 256 + b[p + i];
+
+            return { id: v, len: n };
+        };
+
+        const readSize = (p) => {
+
+            let n = 1, m = 0x80;
+
+            while (n <= 8 && !(b[p] & m)) { m >>= 1; n++; }
+
+            if (n > 8 || p + n > b.length) return null;
+
+            let v = b[p] & (m - 1);
+            let ones = (b[p] & (m - 1)) === (m - 1);
+
+            for (let i = 1; i < n; i++) {
+
+                v = v * 256 + b[p + i];
+
+                if (b[p + i] !== 0xff) ones = false;
+            }
+
+            return { size: v, len: n, unknown: ones };
+        };
+
+        const header = (p) => {
+
+            const id = readId(p);
+
+            if (!id) return null;
+
+            const sz = readSize(p + id.len);
+
+            if (!sz) return null;
+
+            return { id: id.id, idLen: id.len, sizeLen: sz.len, size: sz.size, unknown: sz.unknown, data: p + id.len + sz.len };
+        };
+
+        const encodeSize = (value, minLen) => {
+
+            let len = minLen;
+
+            while (len < 8 && value >= Math.pow(2, 7 * len) - 1) len++;
+
+            const out = new Uint8Array(len);
+
+            let v = value;
+
+            for (let i = len - 1; i >= 0; i--) {
+
+                out[i] = v % 256;
+                v = Math.floor(v / 256);
+            }
+
+            out[0] |= 0x80 >> (len - 1);
+
+            return out;
+        };
+
+        // intestazione EBML, poi il Segment
+        const ebml = header(0);
+
+        if (!ebml || ebml.id !== 0x1A45DFA3) return null;
+
+        const seg = header(ebml.data + ebml.size);
+
+        if (!seg || seg.id !== 0x18538067) return null;
+
+        // dentro il Segment si cerca "Info" (sta sempre prima dei Cluster)
+        let info = null;
+
+        for (let p = seg.data; p < b.length;) {
+
+            const h = header(p);
+
+            if (!h || h.unknown || h.id === 0x1F43B675) break;
+
+            if (h.id === 0x1549A966) { info = h; break; }
+
+            p = h.data + h.size;
+        }
+
+        if (!info) return null;
+
+        // dentro Info: scala del tempo e, se c'e' gia', la durata
+        let scale = 1000000;
+        let durPos = -1;
+        let durSize = 0;
+
+        for (let p = info.data; p < info.data + info.size;) {
+
+            const h = header(p);
+
+            if (!h) return null;
+
+            if (h.id === 0x2AD7B1) {
+
+                let v = 0;
+
+                for (let i = 0; i < h.size; i++) v = v * 256 + b[h.data + i];
+
+                if (v > 0) scale = v;
+            }
+
+            if (h.id === 0x4489) { durPos = h.data; durSize = h.size; }
+
+            p = h.data + h.size;
+        }
+
+        const units = durationMs * 1e6 / scale;
+
+        // la durata c'e' gia' (di solito a zero): si riscrive sul posto
+        if (durPos >= 0) {
+
+            if (durSize !== 4 && durSize !== 8) return null;
+
+            const out = new Uint8Array(b);
+
+            const dv = new DataView(out.buffer);
+
+            if (durSize === 8) dv.setFloat64(durPos, units); else dv.setFloat32(durPos, units);
+
+            return out;
+        }
+
+        // altrimenti si aggiunge in fondo a Info: ID 0x4489, grandezza 8, numero a 64 bit
+        const extra = new Uint8Array(11);
+
+        extra[0] = 0x44;
+        extra[1] = 0x89;
+        extra[2] = 0x88;
+
+        new DataView(extra.buffer).setFloat64(3, units);
+
+        const newInfoSize = encodeSize(info.size + extra.length, info.sizeLen);
+
+        const infoEnd = info.data + info.size;
+
+        const out = new Uint8Array(b.length + extra.length + (newInfoSize.length - info.sizeLen));
+
+        let w = 0;
+
+        out.set(b.subarray(0, info.data - info.sizeLen), w);
+        w += info.data - info.sizeLen;
+
+        out.set(newInfoSize, w);
+        w += newInfoSize.length;
+
+        out.set(b.subarray(info.data, infoEnd), w);
+        w += info.size;
+
+        out.set(extra, w);
+        w += extra.length;
+
+        out.set(b.subarray(infoEnd), w);
+
+        // se il Segment ha una grandezza dichiarata, cresce della stessa quantita'
+        if (!seg.unknown) {
+
+            const grow = extra.length + (newInfoSize.length - info.sizeLen);
+
+            const newSeg = encodeSize(seg.size + grow, seg.sizeLen);
+
+            if (newSeg.length !== seg.sizeLen) return null;
+
+            out.set(newSeg, seg.data - seg.sizeLen);
+        }
+
+        return out;
+
+    } catch (e) {
+
+        return null;
+    }
+}
+
+
 // ---- VIDEO WebM (registrato in tempo reale dal canvas) ----
 //
 // Nessun fotogramma preparato in anticipo: ognuno si disegna nel
 // momento in cui va mostrato (e' veloce), quindi la memoria non
 // dipende dalla durata.
+//
+// Dura quanto la GIF con i suoi tempi: UN giro dell'animazione, e la
+// durata viene scritta nel file.
 
 btnVideo.onclick = () => runExport(btnVideo, async (o) => {
 
@@ -3213,10 +3417,8 @@ btnVideo.onclick = () => runExport(btnVideo, async (o) => {
 
     const stopped = new Promise(resolve => { rec.onstop = resolve; });
 
+    // durata del giro = somma dei ritardi della GIF (centesimi di secondo)
     const loopMs = delays.reduce((a, b) => a + b, 0) * 10;
-
-    // almeno 3 secondi: il video si ripete finche' non li raggiunge
-    const loops = Math.max(1, Math.ceil(3000 / loopMs));
 
     const draw = (k) => {
 
@@ -3237,19 +3439,19 @@ btnVideo.onclick = () => runExport(btnVideo, async (o) => {
 
     await new Promise(resolve => {
 
-        let shown = -1;
+        let shown = 0;
 
         const step = () => {
 
             const el = performance.now() - t0;
 
-            if (el >= loopMs * loops) {
+            if (el >= loopMs) {
                 resolve();
                 return;
             }
 
-            // fotogramma corrente in base al tempo trascorso nel loop
-            let local = el % loopMs;
+            // fotogramma corrente in base al tempo trascorso
+            let local = el;
             let i = 0;
 
             while (i < delays.length - 1 && local >= delays[i] * 10) {
@@ -3257,14 +3459,18 @@ btnVideo.onclick = () => runExport(btnVideo, async (o) => {
                 i++;
             }
 
-            const key = Math.floor(el / loopMs) * 100000 + i;
-
-            if (key !== shown) {
-                shown = key;
+            if (i !== shown) {
+                shown = i;
                 draw(i);
             }
 
-            o.onStatus(`Registro il video… ${Math.round(el / (loopMs * loops) * 100)}%`);
+            o.onStatus(`Registro il video… ${Math.round(el / loopMs * 100)}%`);
+
+            // manca meno di un passo dello schermo: si aspetta esattamente il resto
+            if (loopMs - el < 17) {
+                setTimeout(resolve, loopMs - el);
+                return;
+            }
 
             requestAnimationFrame(step);
         };
@@ -3272,16 +3478,26 @@ btnVideo.onclick = () => runExport(btnVideo, async (o) => {
         step();
     });
 
-    draw(0);
+    // ultimo fotogramma ancora una volta: segna la fine esatta del giro
+    // (il file non ha altro dopo, quindi non si aggiunge niente alla durata)
+    draw(delays.length - 1);
 
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise(r => setTimeout(r, 60));
 
     rec.stop();
 
     await stopped;
 
+    const raw = new Blob(chunks, { type: 'video/webm' });
+
+    let blob = raw;
+
+    const fixed = setWebmDuration(new Uint8Array(await raw.arrayBuffer()), loopMs);
+
+    if (fixed) blob = new Blob([fixed], { type: 'video/webm' });
+
     await saveFile(
-        new Blob(chunks, { type: 'video/webm' }),
+        blob,
         `${fileLabel()}.webm`, 'Video WebM', 'video/webm', '.webm'
     );
 });
