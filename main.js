@@ -1282,7 +1282,8 @@ const samEls = {
 };
 
 // passaggio tra i disegni di due pose (scelta salvata nel browser)
-const SAM_SOFT_KEY = 'animator.samSoft';
+// (chiave nuova: una dissolvenza scelta per prova con le versioni vecchie non resta attiva senza che tu lo sappia)
+const SAM_SOFT_KEY = 'animator.samSoft2';
 
 try {
 
@@ -1294,9 +1295,31 @@ try {
 
 setSamSoft(samEls.soft.value);
 
+// avviso vicino ai pulsanti di esportazione: con una dissolvenza attiva GIF, APNG e video
+// mostrano doppie immagini tra una posa e l'altra
+function refreshSoftWarn() {
+
+    const el = document.getElementById('samSoftWarn');
+
+    if (!el) return;
+
+    const on = state.samMode && Number(samEls.soft.value) > 0;
+
+    el.style.display = on ? 'block' : 'none';
+
+    if (on) {
+
+        el.textContent = '⚠ «Passaggio tra i disegni» è su «' + samEls.soft.selectedOptions[0].text.replace(/\s*\(.*\)\s*$/, '')
+            + '»: tra una posa e l\'altra le immagini si mescolano e si vedono doppie (effetto fantasma) in GIF, APNG e video. '
+            + 'Per i frame esatti del file scegli «Netto».';
+    }
+}
+
 samEls.soft.addEventListener('change', () => {
 
     setSamSoft(samEls.soft.value);
+
+    refreshSoftWarn();
 
     try { localStorage.setItem(SAM_SOFT_KEY, samEls.soft.value); } catch (e) { /* ignoro */ }
 
@@ -1396,6 +1419,8 @@ function setStandardMode() {
     // i CGS contano sempre 1/60 di secondo per tick
     state.tickMs = TICK_MS;
     samSpeedBox.style.display = 'none';
+
+    refreshSoftWarn();
 }
 
 function setSamMode(unit) {
@@ -1442,6 +1467,8 @@ function setSamMode(unit) {
     selectAnim.value = state.current;
 
     updateSamDuration();
+
+    refreshSoftWarn();
 }
 
 // tiene solo i frame principali di ogni animazione (o tutti, se la tolleranza e' 0) e riempie il menu
