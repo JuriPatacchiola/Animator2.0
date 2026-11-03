@@ -1776,6 +1776,8 @@ try {
 
     if (v && v.bgAll) bgEls.all.checked = true;
 
+    if (v && v.gifSoft === false) document.getElementById('gifSoft').checked = false;
+
 } catch (e) { /* ignoro */ }
 
 function saveExportPrefs() {
@@ -1788,7 +1790,8 @@ function saveExportPrefs() {
             smooth: document.getElementById('exportSmooth').checked,
             bg: bgEls.color.value,
             bgAlpha: bgEls.num.value,
-            bgAll: bgEls.all.checked
+            bgAll: bgEls.all.checked,
+            gifSoft: document.getElementById('gifSoft').checked
         }));
 
     } catch (e) { /* ignoro */ }
@@ -1836,6 +1839,8 @@ bgEls.color.addEventListener('input', refreshBgPreview);
 bgEls.color.addEventListener('change', () => { refreshBgPreview(); saveExportPrefs(); });
 
 bgEls.all.addEventListener('change', saveExportPrefs);
+
+document.getElementById('gifSoft').addEventListener('change', saveExportPrefs);
 
 refreshBgPreview();
 
@@ -1997,12 +2002,14 @@ const readPixels = (cv) =>
     - 'gif'       sfondo pieno: i colori si calcolano sopra il colore di
                   sfondo, cosi' i pixel semitrasparenti (ombra, bagliori)
                   non diventano pieni;
-    - 'gif-mask'  sfondo trasparente (opacita' 0%): come 'gif', ma i pixel
-                  quasi vuoti diventano trasparenti;
-    - 'gif-alpha' sfondo con opacita' intermedia: la GIF ha solo
-                  "trasparente o pieno", quindi l'opacita' e' simulata con
-                  una retinatura a puntini FISSA (stessa griglia in ogni
-                  fotogramma, niente rumore che sfarfalla);
+    - 'gif-mask'  sfondo trasparente (opacita' 0%), tutto o niente: i pixel
+                  oltre meta' diventano pieni (l'ombra diventa una macchia
+                  nera), gli altri spariscono;
+    - 'gif-alpha' la GIF ha solo "trasparente o pieno", quindi ogni
+                  semitrasparenza (ombra, bagliori, sfondo con opacita'
+                  intermedia) e' simulata con una retinatura a puntini FISSA
+                  (stessa griglia in ogni fotogramma, niente rumore che
+                  sfarfalla): a schermo l'ombra resta leggera come nel WebM;
     - 'alpha'     trasparenza vera (APNG, PNG); `bg` puo' essere un
                   colore css con alpha (rgba) oppure null.
 */
@@ -2059,7 +2066,11 @@ function framePixels(plan, k, mode, bg, canvas, maskCanvas, alpha = 1) {
 
         for (let p = 0, i = 0; p < data.length; p += 4, i++) {
 
-            const m = data[p + 3] / 255;
+            let m = data[p + 3] / 255;
+
+            // quasi vuoto / quasi pieno: niente puntini sparsi sui bordi
+            if (m < 0.06) m = 0;
+            else if (m > 0.94) m = 1;
 
             const back = (1 - m) * alpha;            // quanto sfondo si vede
             const a = m + back;                      // opacita' del risultato
@@ -2181,6 +2192,7 @@ function backgroundOptions() {
         bg,
         bgAlpha,
         bgFill,
+        gifSoft: document.getElementById('gifSoft').checked,
         fillAll: document.getElementById('bgAll').checked ? bgFill : null
     };
 }
@@ -2252,7 +2264,10 @@ btnGif.onclick = () => runExport(btnGif, async (o) => {
     const plan = planFrames(exportPlan(o.scale), o.fps);
 
     // 100% = sfondo pieno, 0% = trasparente, in mezzo = puntini (la GIF non ha mezze trasparenze)
-    const mode = o.bgAlpha >= 1 ? 'gif' : (o.bgAlpha <= 0 ? 'gif-mask' : 'gif-alpha');
+    // sfondo trasparente: ombra e bagliori semitrasparenti a puntini (come il WebM) oppure tutto o niente (come prima)
+    const mode = o.bgAlpha >= 1
+        ? 'gif'
+        : (o.bgAlpha <= 0 && !o.gifSoft ? 'gif-mask' : 'gif-alpha');
 
     const canvas = document.createElement('canvas');
     const maskCanvas = document.createElement('canvas');
