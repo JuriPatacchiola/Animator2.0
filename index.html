@@ -195,19 +195,43 @@
                                 %</span>
                         </div>
                     </div>
-                    <label
-                        title="La GIF ha solo 'trasparente o no': i bordi morbidi e l'ombra vengono fusi con il colore qui sotto. Scegli il colore della pagina dove userai la GIF.">
-                        <input type="checkbox" id="gifTransparent"> GIF: sfondo trasparente
-                    </label>
-                    <label title="Colore di sfondo della GIF; con lo sfondo trasparente serve a fondere bordi e ombra.">
-                        GIF: colore sfondo <input type="color" id="gifBg" value="#0f1218">
-                    </label>
+                    <div
+                        style="display:flex;flex-direction:column;gap:6px;background:#12151b;border:1px solid #2e3340;border-radius:6px;padding:8px">
+                        <label
+                            title="Colore dello sfondo: serve per GIF, video WebM e (se spunti la casella sotto) APNG / PNG. Con la GIF fonde anche bordi morbidi e ombra.">
+                            Sfondo: colore <input type="color" id="gifBg" value="#0f1218">
+                            <span id="bgPreview" title="Anteprima: scacchiera = trasparente"
+                                style="display:inline-block;width:42px;height:20px;border:1px solid #4b5563;border-radius:4px;vertical-align:middle;margin-left:6px;background-color:#fff;background-image:linear-gradient(45deg,#9ca3af 25%,transparent 25%,transparent 75%,#9ca3af 75%),linear-gradient(45deg,#9ca3af 25%,transparent 25%,transparent 75%,#9ca3af 75%);background-size:10px 10px;background-position:0 0,5px 5px;position:relative;overflow:hidden"><span
+                                    id="bgPreviewFill"
+                                    style="position:absolute;inset:0;background:#0f1218"></span></span>
+                        </label>
+                        <label
+                            title="0% = sfondo trasparente, 100% = sfondo pieno. WebM, APNG e PNG hanno la trasparenza vera. La GIF puo' solo 'trasparente o pieno': con i valori intermedi l'opacita' e' simulata con una retinatura a puntini (a 50% un puntino sì e uno no).">
+                            <span style="display:flex;align-items:center;gap:8px;flex-wrap:nowrap">
+                                <span style="white-space:nowrap">Sfondo: opacità</span>
+                                <input type="range" id="bgAlpha" min="0" max="100" step="5" value="100"
+                                    style="flex:1;min-width:60px;margin:0">
+                                <input type="number" id="bgAlphaNum" min="0" max="100" step="5" value="100"
+                                    style="flex:none;width:54px;padding:4px;background:#2a2f3a;color:#fff;border:1px solid #4b5563;border-radius:4px">
+                                <span>%</span>
+                            </span>
+                        </label>
+                        <div style="font-size:11px;color:#9ca3af;line-height:1.4">
+                            0% = trasparente · 100% = pieno. Vale per <b>GIF</b> e <b>Video WebM</b>
+                            (con "Video: sfondo trasparente" tolto). Nella GIF le mezze opacità sono
+                            a puntini.
+                        </div>
+                        <label
+                            title="APNG e PNG di solito sono trasparenti. Spunta per dar loro lo stesso sfondo (colore + opacità) scelto qui sopra.">
+                            <input type="checkbox" id="bgAll"> Applica lo sfondo anche a APNG / PNG
+                        </label>
+                    </div>
                     <button id="downloadGif" class="primary-btn"
                         style="background: linear-gradient(135deg, #10b981, #059669);">
                         🎞️ ESPORTA GIF
                     </button>
                     <label
-                        title="Video WebM con sfondo trasparente (si vede su browser Chrome/Edge/Firefox e in alcuni programmi). Se tolto, usa il colore di sfondo scelto.">
+                        title="Video WebM con sfondo trasparente (si vede su browser Chrome/Edge/Firefox e in alcuni programmi). Se tolto, usa il colore e l'opacità di sfondo scelti.">
                         <input type="checkbox" id="videoTransparent" checked> Video: sfondo trasparente
                     </label>
                     <button id="downloadVideo" class="primary-btn"
@@ -215,30 +239,6 @@
                         style="background: linear-gradient(135deg, #ef4444, #b91c1c);">
                         🎬 ESPORTA VIDEO (WebM)
                     </button>
-                    <button id="downloadMov" class="primary-btn"
-                        title="Video .mov Apple ProRes 4444 con trasparenza vera: QuickTime, Final Cut, Motion, iMovie. Sul Mac diventa HEVC trasparente (per Safari / iPhone) con un clic destro."
-                        style="background: linear-gradient(135deg, #6b7280, #111827);">
-                        🍎 ESPORTA MOV APPLE (trasparente)
-                    </button>
-                    <details
-                        style="font-size:12px;color:#9ca3af;background:#12151b;border:1px solid #2e3340;border-radius:6px;padding:8px">
-                        <summary style="cursor:pointer;color:#d1d5db">Video trasparente per Safari / iPhone (HEVC)
-                        </summary>
-                        <div style="margin-top:6px;line-height:1.5">
-                            Il .mov esportato è ProRes 4444 con trasparenza. Per Safari, iPhone e iPad va
-                            trasformato in HEVC, una volta sola, su un Mac:<br>
-                            <b>1.</b> clic destro sul file .mov nel Finder<br>
-                            <b>2.</b> Servizi (o Azioni rapide) → <b>Codifica file video selezionati</b><br>
-                            <b>3.</b> Impostazione <b>HEVC 1080p</b> (o 4K) e spunta <b>Mantieni trasparenza</b><br>
-                            Nella pagina web:<br>
-                            <code style="color:#facc15;white-space:pre-wrap">&lt;video autoplay loop muted playsinline&gt;
-  &lt;source src="idle-hevc.mov" type="video/quicktime; codecs=hvc1.1.6.H120.b0"&gt;
-  &lt;source src="idle.webm" type="video/webm; codecs=vp09.00.41.08"&gt;
-&lt;/video&gt;</code><br>
-                            L'HEVC va <b>prima</b>: Safari prende quello (trasparente), Chrome / Firefox /
-                            Android il WebM.
-                        </div>
-                    </details>
                     <button id="downloadApng" class="primary-btn"
                         title="PNG animato con trasparenza vera (ombra e bagliori morbidi). Si apre nei browser e in molti programmi; non e' un video."
                         style="background: linear-gradient(135deg, #8b5cf6, #6d28d9);">

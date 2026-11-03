@@ -2,7 +2,6 @@ import { createAPNGWriter, createZipWriter } from './apng.js';
 import { initAssembler } from './assembler.js';
 import { createGifWriter, createPaletteBuilder } from './gif.js';
 import { Parser } from './parser.js';
-import { createMovWriter, createProResEncoder } from './prores.js';
 import { Renderer } from './renderer.js';
 import {
     TICK_MS,
@@ -157,9 +156,6 @@ const btnVideo =
 
 const btnZip =
     document.getElementById('downloadZip');
-
-const btnMov =
-    document.getElementById('downloadMov');
 
 document.getElementById('resetView').onclick = () => {
 
@@ -1670,8 +1666,24 @@ function updateExportInfo() {
     }
 }
 
-// ingrandimento e fps dell'esportazione restano come li hai scelti
+// ingrandimento, fps e sfondo dell'esportazione restano come li hai scelti
 const EXPORT_KEY = 'animator.export';
+
+const bgEls = {
+    color: document.getElementById('gifBg'),
+    range: document.getElementById('bgAlpha'),
+    num: document.getElementById('bgAlphaNum'),
+    all: document.getElementById('bgAll'),
+    fill: document.getElementById('bgPreviewFill')
+};
+
+// anteprima a scacchiera: colore + opacita' scelti
+function refreshBgPreview() {
+
+    const o = backgroundOptions();
+
+    bgEls.fill.style.background = o.bgFill || 'transparent';
+}
 
 try {
 
@@ -1680,21 +1692,79 @@ try {
     if (v && v.scale) document.getElementById('gifScale').value = v.scale;
     if (v && v.fps) document.getElementById('gifFps').value = v.fps;
 
+    if (v && /^#[0-9a-f]{6}$/i.test(v.bg || '')) bgEls.color.value = v.bg;
+
+    if (v && Number.isFinite(Number(v.bgAlpha)) && v.bgAlpha !== null && v.bgAlpha !== '') {
+
+        const a = Math.min(100, Math.max(0, Number(v.bgAlpha)));
+
+        bgEls.range.value = a;
+        bgEls.num.value = a;
+    }
+
+    if (v && v.bgAll) bgEls.all.checked = true;
+
 } catch (e) { /* ignoro */ }
 
-['gifScale', 'gifFps'].forEach(id => document.getElementById(id).addEventListener('change', () => {
+function saveExportPrefs() {
 
     try {
 
         localStorage.setItem(EXPORT_KEY, JSON.stringify({
             scale: document.getElementById('gifScale').value,
-            fps: document.getElementById('gifFps').value
+            fps: document.getElementById('gifFps').value,
+            bg: bgEls.color.value,
+            bgAlpha: bgEls.num.value,
+            bgAll: bgEls.all.checked
         }));
 
     } catch (e) { /* ignoro */ }
+}
+
+['gifScale', 'gifFps'].forEach(id => document.getElementById(id).addEventListener('change', () => {
+
+    saveExportPrefs();
 
     updateExportInfo();
 }));
+
+// slider e numero restano allineati (il numero accetta anche valori digitati a mano)
+bgEls.range.addEventListener('input', () => {
+
+    bgEls.num.value = bgEls.range.value;
+
+    refreshBgPreview();
+});
+
+bgEls.num.addEventListener('input', () => {
+
+    const v = Math.min(100, Math.max(0, Number(bgEls.num.value) || 0));
+
+    bgEls.range.value = v;
+
+    refreshBgPreview();
+});
+
+bgEls.num.addEventListener('change', () => {
+
+    // se il campo e' vuoto o fuori misura lo riporto a un valore valido
+    const v = Math.min(100, Math.max(0, Number(bgEls.num.value) || 0));
+
+    bgEls.num.value = v;
+    bgEls.range.value = v;
+
+    refreshBgPreview();
+    saveExportPrefs();
+});
+
+bgEls.range.addEventListener('change', saveExportPrefs);
+
+bgEls.color.addEventListener('input', refreshBgPreview);
+bgEls.color.addEventListener('change', () => { refreshBgPreview(); saveExportPrefs(); });
+
+bgEls.all.addEventListener('change', saveExportPrefs);
+
+refreshBgPreview();
 
 uiReady = true;
 
@@ -1846,14 +1916,92 @@ const readPixels = (cv) =>
 
 /*
     Pixel RGBA del fotogramma k (un solo buffer: dopo l'uso si butta).
-    GIF: i colori si calcolano sopra il colore di sfondo scelto, cosi'
-    i pixel semitrasparenti (ombra, bagliori) non diventano pieni; con
-    lo sfondo trasparente si toglie solo ai pixel quasi vuoti.
+
+    mode:
+    - 'gif'       sfondo pieno: i colori si calcolano sopra il colore di
+                  sfondo, cosi' i pixel semitrasparenti (ombra, bagliori)
+                  non diventano pieni;
+    - 'gif-mask'  sfondo trasparente (opacita' 0%): come 'gif', ma i pixel
+                  quasi vuoti diventano trasparenti;
+    - 'gif-alpha' sfondo con opacita' intermedia: la GIF ha solo
+                  "trasparente o pieno", quindi l'opacita' e' simulata con
+                  una retinatura a puntini FISSA (stessa griglia in ogni
+                  fotogramma, niente rumore che sfarfalla);
+    - 'alpha'     trasparenza vera (APNG, PNG); `bg` puo' essere un
+                  colore css con alpha (rgba) oppure null.
 */
 
-function framePixels(plan, k, mode, bg, canvas, maskCanvas) {
+// matrice di Bayer 8x8: soglie 0..1 per la retinatura ordinata
+const BAYER8 = (() => {
+
+    let m = [[0]];
+
+    for (let n = 1; n < 8; n *= 2) {
+
+        const next = [];
+
+        for (let y = 0; y < n * 2; y++) {
+
+            next.push([]);
+
+            for (let x = 0; x < n * 2; x++) {
+
+                const base = m[y % n][x % n] * 4;
+                const quad = (y < n ? 0 : 2) + (x < n ? 0 : 1);
+
+                next[y].push(base + [0, 2, 3, 1][quad]);
+            }
+        }
+
+        m = next;
+    }
+
+    return Float32Array.from(m.flat(), v => (v + 0.5) / 64);
+})();
+
+function hexToRgb(hex) {
+
+    const v = parseInt(String(hex).replace('#', ''), 16) || 0;
+
+    return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+}
+
+function framePixels(plan, k, mode, bg, canvas, maskCanvas, alpha = 1) {
 
     const pieces = framePieces(plan, k);
+
+    if (mode === 'gif-alpha') {
+
+        // solo i pezzi, su fondo trasparente; lo sfondo si compone qui
+        Renderer.renderToCanvas(pieces, plan.box, plan.scale, null, canvas);
+
+        const data = readPixels(canvas);
+
+        const [br, bgc, bb] = hexToRgb(bg);
+
+        const w = canvas.width;
+
+        for (let p = 0, i = 0; p < data.length; p += 4, i++) {
+
+            const m = data[p + 3] / 255;
+
+            const back = (1 - m) * alpha;            // quanto sfondo si vede
+            const a = m + back;                      // opacita' del risultato
+
+            if (a <= BAYER8[((((i / w) | 0) & 7) << 3) | ((i % w) & 7)]) {
+
+                data[p + 3] = 0;                     // puntino "vuoto"
+                continue;
+            }
+
+            data[p] = Math.round((data[p] * m + br * back) / a);
+            data[p + 1] = Math.round((data[p + 1] * m + bgc * back) / a);
+            data[p + 2] = Math.round((data[p + 2] * m + bb * back) / a);
+            data[p + 3] = 255;
+        }
+
+        return data;
+    }
 
     if (mode === 'gif' || mode === 'gif-mask') {
 
@@ -1875,7 +2023,7 @@ function framePixels(plan, k, mode, bg, canvas, maskCanvas) {
         return data;
     }
 
-    Renderer.renderToCanvas(pieces, plan.box, plan.scale, null, canvas);
+    Renderer.renderToCanvas(pieces, plan.box, plan.scale, bg || null, canvas);
 
     return readPixels(canvas);
 }
@@ -1931,6 +2079,38 @@ async function saveFile(blob, fileName, description, mime, ext) {
 
 
 /*
+    Sfondo scelto (colore + opacita' 0-100%):
+    - bg        colore esadecimale
+    - bgAlpha   0..1
+    - bgFill    colore css con alpha da disegnare sotto i pezzi (null se 0%)
+    - fillAll   come bgFill, ma solo se e' spuntato "anche APNG / PNG"
+                (altrimenti null: restano trasparenti come prima)
+*/
+
+function backgroundOptions() {
+
+    const bg = document.getElementById('gifBg').value;
+
+    const pct = Number(document.getElementById('bgAlpha').value);
+
+    const bgAlpha = Math.min(1, Math.max(0, (Number.isFinite(pct) ? pct : 100) / 100));
+
+    const [r, g, b] = hexToRgb(bg);
+
+    const bgFill = bgAlpha <= 0
+        ? null
+        : (bgAlpha >= 1 ? bg : `rgba(${r}, ${g}, ${b}, ${bgAlpha})`);
+
+    return {
+        bg,
+        bgAlpha,
+        bgFill,
+        fillAll: document.getElementById('bgAll').checked ? bgFill : null
+    };
+}
+
+
+/*
     Esegue una esportazione: controlla che l'animazione sia avviata,
     blocca il pulsante e mostra l'avanzamento.
 */
@@ -1948,7 +2128,7 @@ async function runExport(button, job) {
 
     const label = button.innerText;
 
-    const exportButtons = [btnGif, btnApng, btnZip, btnVideo, btnMov];
+    const exportButtons = [btnGif, btnApng, btnZip, btnVideo];
 
     exportButtons.forEach(b => b.disabled = true);
 
@@ -1959,8 +2139,7 @@ async function runExport(button, job) {
         await job({
             fps: Number(document.getElementById('gifFps').value) || 50,
             scale: exportScale(),
-            bg: document.getElementById('gifBg').value,
-            transparent: document.getElementById('gifTransparent').checked,
+            ...backgroundOptions(),
             onStatus
         });
 
@@ -1995,7 +2174,10 @@ async function runExport(button, job) {
 btnGif.onclick = () => runExport(btnGif, async (o) => {
 
     const plan = planFrames(exportPlan(o.scale), o.fps);
-    const mode = o.transparent ? 'gif-mask' : 'gif';
+
+    // 100% = sfondo pieno, 0% = trasparente, in mezzo = puntini (la GIF non ha mezze trasparenze)
+    const mode = o.bgAlpha >= 1 ? 'gif' : (o.bgAlpha <= 0 ? 'gif-mask' : 'gif-alpha');
+    const transparent = o.bgAlpha < 1;
 
     const canvas = document.createElement('canvas');
     const maskCanvas = document.createElement('canvas');
@@ -2008,7 +2190,7 @@ btnGif.onclick = () => runExport(btnGif, async (o) => {
 
         const k = Math.floor(s * plan.n / samples);
 
-        pb.add(framePixels(plan, k, mode, o.bg, canvas, maskCanvas));
+        pb.add(framePixels(plan, k, mode, o.bg, canvas, maskCanvas, o.bgAlpha));
 
         if (s % 4 === 0) {
             o.onStatus(`Analizzo i colori… ${s + 1}/${samples}`);
@@ -2017,13 +2199,13 @@ btnGif.onclick = () => runExport(btnGif, async (o) => {
     }
 
     const gw = createGifWriter(plan.width, plan.height, {
-        ...pb.finish(o.transparent),
-        transparent: o.transparent
+        ...pb.finish(transparent),
+        transparent
     });
 
     for (let k = 0; k < plan.n; k++) {
 
-        gw.addFrame(framePixels(plan, k, mode, o.bg, canvas, maskCanvas), plan.delays[k]);
+        gw.addFrame(framePixels(plan, k, mode, o.bg, canvas, maskCanvas, o.bgAlpha), plan.delays[k]);
 
         if (k % 2 === 0) {
             o.onStatus(`Creo la GIF… ${k + 1}/${plan.n}`);
@@ -2050,7 +2232,7 @@ btnApng.onclick = () => runExport(btnApng, async (o) => {
 
     for (let k = 0; k < plan.n; k++) {
 
-        await aw.addFrame(framePixels(plan, k, 'alpha', null, canvas), plan.delays[k]);
+        await aw.addFrame(framePixels(plan, k, 'alpha', o.fillAll, canvas), plan.delays[k]);
 
         if (k % 2 === 0) {
             o.onStatus(`Creo l'APNG… ${k + 1}/${plan.n}`);
@@ -2121,7 +2303,7 @@ btnVideo.onclick = () => runExport(btnVideo, async (o) => {
 
     const draw = (k) => {
 
-        Renderer.renderToCanvas(framePieces(plan, k), plan.box, plan.scale, transparent ? null : o.bg, work);
+        Renderer.renderToCanvas(framePieces(plan, k), plan.box, plan.scale, transparent ? null : o.bgFill, work);
 
         ctx.clearRect(0, 0, width, height);
 
@@ -2188,44 +2370,6 @@ btnVideo.onclick = () => runExport(btnVideo, async (o) => {
 });
 
 
-// ---- MOV Apple ProRes 4444 con trasparenza ----
-//
-// Codifica nel browser, un fotogramma alla volta (memoria costante).
-// Il file si apre in QuickTime / Final Cut / Motion; sul Mac si
-// converte in HEVC trasparente per Safari e iPhone (vedi riquadro).
-
-btnMov.onclick = () => runExport(btnMov, async (o) => {
-
-    const plan = planFrames(exportPlan(o.scale), o.fps);
-
-    const canvas = document.createElement('canvas');
-
-    const enc = createProResEncoder(plan.width, plan.height, { quant: 2 });
-    const mov = createMovWriter(plan.width, plan.height);
-
-    const t0 = performance.now();
-
-    for (let k = 0; k < plan.n; k++) {
-
-        mov.addFrame(
-            enc.encodeFrame(framePixels(plan, k, 'alpha', null, canvas)),
-            plan.delays[k] * 10
-        );
-
-        const left = (performance.now() - t0) / (k + 1) * (plan.n - k - 1) / 1000;
-
-        o.onStatus(`Creo il MOV… ${k + 1}/${plan.n}` + (k > 2 ? ` (~${Math.ceil(left)} s)` : ''));
-
-        await pause0();
-    }
-
-    await saveFile(
-        mov.finish(),
-        `${fileLabel()}.mov`, 'Video QuickTime (ProRes 4444)', 'video/quicktime', '.mov'
-    );
-});
-
-
 // ---- ZIP con un PNG trasparente per ogni frame della timeline ----
 //
 // Un PNG per ogni frame che vedi nella timeline (quindi per ogni riga
@@ -2256,7 +2400,7 @@ btnZip.onclick = () => runExport(btnZip, async (o) => {
             smooth: false
         }) || [];
 
-        Renderer.renderToCanvas(pieces, plan.box, plan.scale, null, canvas);
+        Renderer.renderToCanvas(pieces, plan.box, plan.scale, o.fillAll, canvas);
 
         const blob = await new Promise(r => canvas.toBlob(r, 'image/png'));
 
