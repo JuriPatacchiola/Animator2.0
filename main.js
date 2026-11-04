@@ -16,6 +16,7 @@ import {
     sequenceTotalTicks,
     setSamSoft
 } from './smoothing.js';
+import { createWebpWriter } from './webp.js';
 
 
 // ============================================================
@@ -180,6 +181,9 @@ const btnVideo =
 
 const btnZip =
     document.getElementById('downloadZip');
+
+const btnWebp =
+    document.getElementById('downloadWebp');
 
 document.getElementById('resetView').onclick = () => {
 
@@ -2509,11 +2513,12 @@ updateExportInfo();
       anche tra unita' diverse; i piedi stanno in basso, a circa l'80%).
 */
 
-function exportBox(shifts) {
+function exportBox(shifts, forceAuto = false) {
 
-    if (areaEls.screen.checked) return screenBox();
+    // forceAuto: area stretta attorno all'animazione, qualunque area sia scelta nel pannello (zoom automatico del WebP)
+    if (!forceAuto && areaEls.screen.checked) return screenBox();
 
-    if (document.getElementById('areaFixed').checked) {
+    if (!forceAuto && document.getElementById('areaFixed').checked) {
 
         const box = fixedBox();
 
@@ -2609,13 +2614,24 @@ function limitScale(box, scale, maxMp) {
         : scale;
 }
 
-function exportPlan(scale, maxMp = 0) {
+function exportPlan(scale, maxMp = 0, forceAuto = false) {
 
     const sequence = state.sequences[state.current];
 
     const shifts = activeShifts();
 
-    const box = exportBox(shifts);
+    let box = exportBox(shifts, forceAuto);
+
+    // un po' d'aria attorno, cosi' niente tocca il bordo e nessun pezzo viene tagliato
+    if (forceAuto) {
+
+        const m = 4;
+
+        const w = Math.ceil(box.w + 2 * m);
+        const h = Math.ceil(box.h + 2 * m);
+
+        box = { x: box.x - m, y: box.y - m, w: w + (w % 2), h: h + (h % 2) };
+    }
 
     scale = limitScale(box, scale, maxMp);
 
@@ -3070,7 +3086,7 @@ async function runExport(button, job) {
 
     const label = button.innerText;
 
-    const exportButtons = [btnGif, btnApng, btnZip, btnVideo];
+    const exportButtons = [btnGif, btnApng, btnZip, btnVideo, btnWebp];
 
     exportButtons.forEach(b => b.disabled = true);
 
@@ -4491,3 +4507,150 @@ window.addEventListener('keydown', (e) => {
         e.preventDefault();
     }
 });
+
+
+// ============================================================
+// WEBP ANIMATO (per iPhone e per chi non vuole la GIF)
+//
+// - colori pieni e trasparenza vera (la GIF ha solo 256 colori);
+// - tempi esatti al millisecondo, un solo giro dell'animazione, in ciclo;
+// - fotogrammi identici di fila uniti in uno solo (file piu' leggero);
+// - "senza perdita" (consigliato): nessun colore rovinato o "bruciato".
+//
+// Zoom automatico: area stretta attorno al personaggio (uguale per
+// tutte le animazioni) e ingrandimento a NUMERO INTERO, cosi' il
+// personaggio riempie il video e i pixel restano nitidi. Senza questo,
+// un'animazione piccola in una tela grande viene rimpicciolita dal
+// telefono e sembra sfocata.
+// ============================================================
+
+const webpEls = {
+    zoom: document.getElementById('webpZoom'),
+    target: document.getElementById('webpTarget'),
+    quality: document.getElementById('webpQuality')
+};
+
+// ingrandimento intero che porta il lato lungo vicino a "target" pixel (mai oltre i limiti del browser)
+function webpZoomScale(box, target) {
+
+    const long = Math.max(box.w, box.h);
+
+    let k = Math.max(1, Math.floor(target / long));
+
+    while (k > 1 && (box.w * k > 4096 || box.h * k > 4096 || box.w * box.h * k * k > 12e6)) k--;
+
+    return k;
+}
+
+btnWebp.onclick = () => runExport(btnWebp, async (o) => {
+
+    const zoom = webpEls.zoom.checked;
+
+    const target = Math.min(4096, Math.max(200, Number(webpEls.target.value) || 1080));
+
+    const quality = Math.min(1, Math.max(0.5, Number(webpEls.quality.value) || 1));
+
+    let plan;
+
+    if (zoom) {
+
+        const probe = exportPlan(1, 0, true);
+
+        plan = planFrames(exportPlan(webpZoomScale(probe.box, target), 0, true), o.fps);
+
+    } else {
+
+        plan = planFrames(exportPlan(o.scale), o.fps);
+    }
+
+    const { width, height, delays } = plan;
+
+    // sfondo: colore + opacita' scelti (0% = trasparente). Il WebP ha la trasparenza vera.
+    const hasAlpha = !o.bgFill || o.bgAlpha < 1;
+
+    const canvas = document.createElement('canvas');
+
+    const writer = createWebpWriter(width, height, { loop: 0, hasAlpha });
+
+    const encode = async (pieces, ms) => {
+
+        Renderer.renderToCanvas(pieces, plan.box, plan.scale, o.bgFill, canvas);
+
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/webp', quality));
+
+        if (!blob || blob.type !== 'image/webp') {
+
+            throw new Error('Questo browser non sa creare immagini WebP: usa Chrome o Edge.');
+        }
+
+        writer.addFrame(new Uint8Array(await blob.arrayBuffer()), ms);
+    };
+
+    // fotogrammi identici di fila = uno solo, con la durata sommata
+    let cur = null;
+    let curMs = 0;
+    let curSig = null;
+
+    for (let k = 0; k < plan.n; k++) {
+
+        const pieces = framePieces(plan, k);
+
+        const sig = JSON.stringify(pieces);
+
+        if (sig === curSig) {
+
+            curMs += delays[k] * 10;
+
+        } else {
+
+            if (cur) await encode(cur, curMs);
+
+            cur = pieces;
+            curSig = sig;
+            curMs = delays[k] * 10;
+        }
+
+        if (k % 2 === 0) {
+
+            o.onStatus(`Creo il WebP… ${k + 1}/${plan.n}`);
+
+            await pause0();
+        }
+    }
+
+    if (cur) await encode(cur, curMs);
+
+    await saveFile(
+        writer.finish(),
+        `${fileLabel()}.webp`, 'WebP animato', 'image/webp', '.webp'
+    );
+});
+
+// scelte del WebP: ricordate dal browser
+const WEBP_KEY = 'animator.webp';
+
+try {
+
+    const v = JSON.parse(localStorage.getItem(WEBP_KEY) || 'null');
+
+    if (v) {
+
+        if (v.zoom === false) webpEls.zoom.checked = false;
+        if (Number(v.target) >= 200 && Number(v.target) <= 4096) webpEls.target.value = Number(v.target);
+        if ([...webpEls.quality.options].some(op => op.value === String(v.quality))) webpEls.quality.value = String(v.quality);
+    }
+
+} catch (e) { /* ignoro */ }
+
+[webpEls.zoom, webpEls.target, webpEls.quality].forEach(el => el.addEventListener('change', () => {
+
+    try {
+
+        localStorage.setItem(WEBP_KEY, JSON.stringify({
+            zoom: webpEls.zoom.checked,
+            target: Number(webpEls.target.value),
+            quality: webpEls.quality.value
+        }));
+
+    } catch (e) { /* ignoro */ }
+}));

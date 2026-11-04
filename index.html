@@ -313,6 +313,33 @@
                         style="background: linear-gradient(135deg, #10b981, #059669);">
                         🎞️ ESPORTA GIF
                     </button>
+                    <div id="webpBox" style="display:flex;flex-direction:column;gap:6px;font-size:13px;color:#9ca3af">
+                        <label
+                            title="Inquadra stretto il personaggio (la stessa inquadratura per tutte le animazioni) e ingrandisce a numero intero, così il personaggio riempie il video e i pixel restano nitidi. Senza, un'animazione piccola in una tela grande viene rimpicciolita dal telefono e sembra sfocata.">
+                            <input type="checkbox" id="webpZoom" checked> WebP: zoom automatico sul personaggio
+                        </label>
+                        <label
+                            title="Misura in pixel del lato più lungo del WebP (l'ingrandimento è sempre un numero intero: l'uscita si avvicina a questo valore senza superarlo).">
+                            Lato lungo (px)
+                            <input type="number" id="webpTarget" min="200" max="4096" step="10" value="1080"
+                                style="width:76px;padding:4px;background:#2a2f3a;color:#fff;border:1px solid #4b5563;border-radius:4px">
+                        </label>
+                        <label
+                            title="«Senza perdita» tiene i colori identici (nessun colore rovinato) ed è la scelta consigliata. Le altre rendono il file più leggero ma possono sporcare i bordi dei pixel.">
+                            Qualità
+                            <select id="webpQuality"
+                                style="width:100%;padding:6px;background:#2a2f3a;color:#fff;border:1px solid #4b5563;border-radius:4px;margin-top:4px">
+                                <option value="1" selected>Senza perdita (consigliato)</option>
+                                <option value="0.92">Alta (file più leggero)</option>
+                                <option value="0.8">Media (file leggerissimo)</option>
+                            </select>
+                        </label>
+                    </div>
+                    <button id="downloadWebp" class="primary-btn"
+                        title="WebP animato: colori pieni, trasparenza vera e tempi esatti, un solo giro dell'animazione in ciclo. Si apre su iPhone (Safari), Chrome, Edge e Firefox. Sfondo come lo scegli qui sopra (opacità 0% = trasparente)."
+                        style="background: linear-gradient(135deg, #0ea5e9, #0369a1);">
+                        🖼️ ESPORTA WebP (iPhone, animato)
+                    </button>
                     <label
                         title="Video WebM con sfondo trasparente (si vede su browser Chrome/Edge/Firefox e in alcuni programmi). Se tolto, usa il colore e l'opacità di sfondo scelti.">
                         <input type="checkbox" id="videoTransparent" checked> Video: sfondo trasparente
