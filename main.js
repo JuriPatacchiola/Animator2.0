@@ -5507,18 +5507,22 @@ async function siteVerify(box, out, names) {
     return checks;
 }
 
-function siteReportHtml({ checks, box, out, names, where, base, blocked }) {
+function siteReportHtml({ checks, box, out, names, where, base, blocked, saveFailed = [] }) {
 
     const icons = { ok: '✔', warn: '⚠', bad: '✖' };
 
     const bad = checks.filter(c => c.level === 'bad').length;
     const warn = checks.filter(c => c.level === 'warn').length;
 
-    const head = blocked
+    const failBox = saveFailed.length
+        ? `<div class="site-check bad"><span class="ic">✖</span><div><b>Il browser non ha potuto scrivere ${saveFailed.length} file nella cartella.</b><small>${esc(where)}</small>${saveFailed.map(x => `<small>${esc(x.name)} → ${esc(x.reason)}</small>`).join('')}<small>Succede quando la cartella è sincronizzata (OneDrive, Dropbox, Drive), controllata da un antivirus, o il file è aperto altrove: prova una cartella normale (es. Desktop) e poi copia i file.</small></div></div>`
+        : '';
+
+    const head = failBox || (blocked
         ? `<div class="site-check bad"><span class="ic">✖</span><div><b>NON salvato: un controllo obbligatorio è fallito.</b><small>Non ho scritto nessun file, per non mettere sul sito file sbagliati.</small></div></div>`
         : (bad || warn
             ? `<div class="site-check warn"><span class="ic">⚠</span><div><b>Salvati i 6 file, ma guarda gli avvisi.</b><small>${esc(where)}</small></div></div>`
-            : `<div class="site-check ok"><span class="ic">✔</span><div><b>Fatto: tutti i controlli sono a posto.</b><small>${esc(where)}</small></div></div>`);
+            : `<div class="site-check ok"><span class="ic">✔</span><div><b>Fatto: tutti i controlli sono a posto.</b><small>${esc(where)}</small></div></div>`));
 
     const rows = [];
 
@@ -5543,31 +5547,99 @@ function siteReportHtml({ checks, box, out, names, where, base, blocked }) {
         <table class="site-table"><thead><tr><th>File</th><th>Tela</th><th>Fotogrammi</th><th>Durata</th><th>Peso</th><th>Memoria iPhone</th></tr></thead><tbody>${rows.join('')}</tbody></table>`;
 }
 
-async function siteSaveFiles(files, dirHandle, zipName) {
+// scrive un file nella cartella scelta; se il browser rifiuta ("il file e' cambiato mentre lo scrivevo":
+// capita con cartelle sincronizzate, antivirus, file aperti altrove) riprova con calma, poi cancellando il vecchio
+async function siteWriteOne(dir, name, blob) {
 
-    if (dirHandle) {
+    const wait = (ms) => new Promise(r => setTimeout(r, ms));
 
-        for (const f of files) {
+    let last = null;
 
-            const h = await dirHandle.getFileHandle(f.name, { create: true });
+    for (let attempt = 0; attempt < 4; attempt++) {
 
-            const w = await h.createWritable();
+        let w = null;
 
-            await w.write(f.blob);
+        try {
+
+            if (attempt >= 2) {
+
+                try { await dir.removeEntry(name); } catch (e) { /* non c'era */ }
+            }
+
+            const h = await dir.getFileHandle(name, { create: true });
+
+            w = await h.createWritable();
+
+            await w.write(blob);
 
             await w.close();
-        }
 
-        return `Salvati nella cartella «${dirHandle.name}» (se c'erano file con lo stesso nome sono stati sostituiti).`;
+            return;
+
+        } catch (e) {
+
+            last = e;
+
+            try { if (w) await w.abort(); } catch (e2) { /* gia' chiuso */ }
+
+            await wait(350 * (attempt + 1));
+        }
     }
+
+    throw last;
+}
+
+// ZIP con i file (anche quando la cartella non funziona)
+async function siteSaveZip(files, zipName) {
 
     const zip = createZipWriter();
 
     for (const f of files) zip.addFile(f.name, new Uint8Array(await f.blob.arrayBuffer()));
 
     await saveFile(zip.finish(), zipName, 'ZIP con i 6 file', 'application/zip', '.zip');
+}
 
-    return `Questo browser non può scrivere in una cartella: scaricato uno ZIP (${zipName}) con i 6 file, da scompattare nella cartella dell'unità.`;
+// ritorna { text, failed: [{ name, reason }] }
+async function siteSaveFiles(files, dirHandle, zipName) {
+
+    if (dirHandle) {
+
+        const failed = [];
+
+        for (const f of files) {
+
+            try {
+
+                await siteWriteOne(dirHandle, f.name, f.blob);
+
+            } catch (e) {
+
+                console.error('Scrittura non riuscita:', f.name, e);
+
+                failed.push({ name: f.name, reason: `${e && e.name ? e.name : 'errore'}: ${e && e.message ? e.message : e}` });
+            }
+        }
+
+        if (!failed.length) {
+
+            return { text: `Salvati nella cartella «${dirHandle.name}» (se c'erano file con lo stesso nome sono stati sostituiti).`, failed };
+        }
+
+        // la cartella non ha accettato qualche file: nessun lavoro perso, si scarica uno ZIP con tutti e 6
+        let zipped = true;
+
+        try { await siteSaveZip(files, zipName); } catch (e) { zipped = false; console.error('ZIP non riuscito:', e); }
+
+        return {
+            text: `${files.length - failed.length} file su ${files.length} scritti nella cartella «${dirHandle.name}»; non scritti: ${failed.map(x => x.name).join(', ')}. `
+                + (zipped ? `Ho scaricato uno ZIP (${zipName}) con tutti e 6 i file: scompattalo nella cartella dell'unità.` : 'Anche lo ZIP non è riuscito.'),
+            failed
+        };
+    }
+
+    await siteSaveZip(files, zipName);
+
+    return { text: `Questo browser non può scrivere in una cartella: scaricato uno ZIP (${zipName}) con i 6 file, da scompattare nella cartella dell'unità.`, failed: [] };
 }
 
 async function runSiteExport(pre, picking) {
@@ -5666,6 +5738,8 @@ async function runSiteExport(pre, picking) {
 
         let where = 'Nessun file scritto.';
 
+        let saveFailed = [];
+
         if (!blocked) {
 
             onStatus('Salvo i file…');
@@ -5678,16 +5752,19 @@ async function runSiteExport(pre, picking) {
                 files.push({ name: `${base}-${n}.webp`, blob: out[n].webpBlob });
             }
 
-            where = await siteSaveFiles(files, dirHandle, `${base}-sito.zip`);
+            const saved = await siteSaveFiles(files, dirHandle, `${base}-sito.zip`);
+
+            where = saved.text;
+            saveFailed = saved.failed;
         }
 
         siteEls.title.textContent = `🌐 Esporta per il sito: ${base}`;
 
-        siteEls.report.innerHTML = siteReportHtml({ checks, box, out, names, where, base, blocked });
+        siteEls.report.innerHTML = siteReportHtml({ checks, box, out, names, where, base, blocked, saveFailed });
 
         siteEls.overlay.style.display = 'flex';
 
-        siteEls.info.textContent = `Ultima esportazione: ${box.w}×${box.h} px · ${blocked ? 'NON salvato' : (checks.some(c => c.level !== 'ok') ? 'salvato con avvisi' : 'tutti i controlli ok')}`;
+        siteEls.info.textContent = `Ultima esportazione: ${box.w}×${box.h} px · ${blocked ? 'NON salvato' : (saveFailed.length ? `${saveFailed.length} file non scritti in cartella (scaricato lo ZIP)` : (checks.some(c => c.level !== 'ok') ? 'salvato con avvisi' : 'tutti i controlli ok'))}`;
 
         state.siteLast = { box, checks, where };
 
