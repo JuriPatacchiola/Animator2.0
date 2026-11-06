@@ -315,7 +315,17 @@
                     </button>
                     <div id="webpBox" style="display:flex;flex-direction:column;gap:6px;font-size:13px;color:#9ca3af">
                         <label
-                            title="Misura i pixel veri di tutte le animazioni dell'unità (anche le più lunghe o larghe: scie, attacchi, bagliori), inquadra esattamente quello spazio, uguale per tutte le animazioni, e ingrandisce a numero intero: il personaggio riempie il video, i pixel restano nitidi e niente viene tagliato.">
+                            title="Come i tuoi WebP di riferimento (v4): area stretta attorno all'animazione scelta (misurata sui pixel veri, niente tagliato), solo i fotogrammi veri con i loro tempi (senza i passaggi intermedi), ogni fotogramma salva solo la parte che cambia (senza perdita) e il file resta sotto il peso massimo: se è troppo pesante lo zoom scende da solo di un numero intero alla volta.">
+                            <input type="checkbox" id="webpCompact" checked> WebP compatto (file piccolo)
+                        </label>
+                        <label id="webpMaxKbRow"
+                            title="Peso massimo del file. Se il WebP lo supera, lo zoom scende (poi, se serve, la qualità). 0 = nessun limite. I tuoi file di riferimento stanno tutti sotto i 2 MB (2048 KB).">
+                            Peso massimo (KB)
+                            <input type="number" id="webpMaxKb" min="0" max="50000" step="64" value="2048"
+                                style="width:76px;padding:4px;background:#2a2f3a;color:#fff;border:1px solid #4b5563;border-radius:4px">
+                        </label>
+                        <label
+                            title="Misura i pixel veri di tutte le animazioni dell'unità (anche le più lunghe o larghe: scie, attacchi, bagliori), inquadra esattamente quello spazio, uguale per tutte le animazioni, e ingrandisce a numero intero: il personaggio riempie il video, i pixel restano nitidi e niente viene tagliato. Con «WebP compatto» l'area è quella della sola animazione scelta.">
                             <input type="checkbox" id="webpZoom" checked> WebP: zoom automatico sul personaggio
                         </label>
                         <label

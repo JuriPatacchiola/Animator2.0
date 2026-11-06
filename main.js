@@ -16,7 +16,7 @@ import {
     sequenceTotalTicks,
     setSamSoft
 } from './smoothing.js';
-import { createWebpWriter } from './webp.js';
+import { encodeAnimatedWebp } from './webp.js';
 
 
 // ============================================================
@@ -4515,6 +4515,8 @@ window.addEventListener('keydown', (e) => {
 // ============================================================
 
 const webpEls = {
+    compact: document.getElementById('webpCompact'),
+    maxKb: document.getElementById('webpMaxKb'),
     zoom: document.getElementById('webpZoom'),
     target: document.getElementById('webpTarget'),
     quality: document.getElementById('webpQuality')
@@ -4551,15 +4553,16 @@ function webpZoomScale(box, target) {
     Se un pezzo arriva al bordo dell'area di prova, la prova si rifa piu' larga.
 */
 
-async function measureTightBox(fps, onProgress) {
+async function measureTightBox(fps, onProgress, { only = null, smooth = document.getElementById('exportSmooth').checked } = {}) {
 
     const shifts = activeShifts();
 
-    const smooth = document.getElementById('exportSmooth').checked;
-
     const base = exportBox(shifts, true);
 
-    const names = [...state.animNames, 'all'].filter((n, i, a) => a.indexOf(n) === i && state.sequences[n] && state.sequences[n].length);
+    // solo = una animazione sola (WebP compatto); altrimenti tutte quelle dell'unita'
+    const names = only
+        ? [only].filter(n => state.sequences[n] && state.sequences[n].length)
+        : [...state.animNames, 'all'].filter((n, i, a) => a.indexOf(n) === i && state.sequences[n] && state.sequences[n].length);
 
     // tutti i fotogrammi diversi di tutte le animazioni (gli stessi campioni dell'esportazione)
     const jobs = [];
@@ -4666,7 +4669,40 @@ async function measureTightBox(fps, onProgress) {
     return base;
 }
 
+/*
+    I fotogrammi veri del WebP: di fila identici = uno solo, con la durata sommata.
+    Ritorna [{ pieces, ms }].
+*/
+function webpKeyFrames(plan) {
+
+    const list = [];
+
+    let sig = null;
+
+    for (let k = 0; k < plan.n; k++) {
+
+        const pieces = framePieces(plan, k);
+
+        const s = JSON.stringify(pieces);
+
+        if (list.length && s === sig) {
+
+            list[list.length - 1].ms += plan.delays[k] * 10;
+
+        } else {
+
+            list.push({ pieces, ms: plan.delays[k] * 10 });
+
+            sig = s;
+        }
+    }
+
+    return list;
+}
+
 btnWebp.onclick = () => runExport(btnWebp, async (o) => {
+
+    const compact = webpEls.compact.checked;
 
     const zoom = webpEls.zoom.checked;
 
@@ -4674,92 +4710,132 @@ btnWebp.onclick = () => runExport(btnWebp, async (o) => {
 
     const quality = Math.min(1, Math.max(0.5, Number(webpEls.quality.value) || 1));
 
-    let plan;
-
-    let k = 0;
-
-    if (zoom) {
-
-        o.onStatus('Misuro l\'animazione…');
-
-        const tight = await measureTightBox(o.fps, (i, n) => o.onStatus(`Misuro l'animazione… ${Math.round(i / n * 100)}%`));
-
-        k = webpZoomScale(tight, target);
-
-        plan = planFrames(exportPlan(k, 0, tight), o.fps);
-
-    } else {
-
-        plan = planFrames(exportPlan(o.scale), o.fps);
-    }
-
-    const { width, height, delays } = plan;
+    const maxKb = Math.max(0, Number(webpEls.maxKb.value) || 0);
 
     // sfondo: colore + opacita' scelti (0% = trasparente). Il WebP ha la trasparenza vera.
     const hasAlpha = !o.bgFill || o.bgAlpha < 1;
 
-    const canvas = document.createElement('canvas');
+    let plan;
+    let box;
+    let k = 0;
+    let q = quality;
 
-    const writer = createWebpWriter(width, height, { loop: 0, hasAlpha });
+    if (compact) {
 
-    const encode = async (pieces, ms) => {
+        // area stretta attorno a QUESTA animazione e solo i fotogrammi veri (niente passaggi intermedi)
+        o.onStatus('Misuro l\'animazione…');
 
-        Renderer.renderToCanvas(pieces, plan.box, plan.scale, o.bgFill, canvas);
+        box = await measureTightBox(o.fps, (i, n) => o.onStatus(`Misuro l'animazione… ${Math.round(i / n * 100)}%`), { only: state.current, smooth: false });
 
-        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/webp', quality));
+        k = zoom ? webpZoomScale(box, target) : o.scale;
 
-        if (!blob || blob.type !== 'image/webp') {
+        plan = exportPlan(k, 0, box);
 
-            throw new Error('Questo browser non sa creare immagini WebP: usa Chrome o Edge.');
-        }
+        plan.smooth = false;
 
-        writer.addFrame(new Uint8Array(await blob.arrayBuffer()), ms);
-    };
+        planFrames(plan, o.fps);
+
+    } else if (zoom) {
+
+        o.onStatus('Misuro l\'animazione…');
+
+        box = await measureTightBox(o.fps, (i, n) => o.onStatus(`Misuro l'animazione… ${Math.round(i / n * 100)}%`));
+
+        k = webpZoomScale(box, target);
+
+        plan = planFrames(exportPlan(k, 0, box), o.fps);
+
+    } else {
+
+        plan = planFrames(exportPlan(o.scale), o.fps);
+
+        box = plan.box;
+    }
 
     // fotogrammi identici di fila = uno solo, con la durata sommata
-    let cur = null;
-    let curMs = 0;
-    let curSig = null;
+    const frames = webpKeyFrames(plan);
 
-    for (let k = 0; k < plan.n; k++) {
+    const durations = frames.map(f => f.ms);
 
-        const pieces = framePieces(plan, k);
+    const build = (scale, quality, label) => encodeAnimatedWebp({
+        width: Math.max(1, Math.round(box.w * scale)),
+        height: Math.max(1, Math.round(box.h * scale)),
+        count: frames.length,
+        durations,
+        render: (i, cv) => { Renderer.renderToCanvas(frames[i].pieces, box, scale, o.bgFill, cv); },
+        hasAlpha,
+        quality,
+        subRect: compact,
+        loop: 0,
+        onProgress: async (i, n) => {
 
-        const sig = JSON.stringify(pieces);
+            o.onStatus(`Creo il WebP… ${i}/${n}${label}`);
 
-        if (sig === curSig) {
-
-            curMs += delays[k] * 10;
-
-        } else {
-
-            if (cur) await encode(cur, curMs);
-
-            cur = pieces;
-            curSig = sig;
-            curMs = delays[k] * 10;
+            if (i % 2 === 0) await pause0();
         }
+    });
 
-        if (k % 2 === 0) {
+    let result = await build(plan.scale, q, '');
 
-            o.onStatus(`Creo il WebP… ${k + 1}/${plan.n}`);
+    let scale = plan.scale;
 
-            await pause0();
+    // peso massimo: prima si abbassa lo zoom (a numeri interi, i pixel restano nitidi), poi la qualita'
+    let reduced = false;
+
+    if (compact && maxKb > 0) {
+
+        for (let attempt = 0; attempt < 10 && result.blob.size / 1024 > maxKb; attempt++) {
+
+            reduced = true;
+
+            const kb = result.blob.size / 1024;
+
+            if (scale > 1.0001) {
+
+                // il peso cresce con l'area (zoom al quadrato), con un po' di margine
+                const guess = Math.floor(scale * Math.sqrt(maxKb / kb) * 0.97);
+
+                scale = Math.max(1, Math.min(Math.ceil(scale) - 1, guess));
+
+            } else if (q > 0.62) {
+
+                q = q >= 1 ? 0.92 : Math.max(0.6, q - 0.12);
+
+            } else {
+
+                break;
+            }
+
+            result = await build(scale, q, ` · prova ×${Math.round(scale * 100) / 100}`);
         }
     }
 
-    if (cur) await encode(cur, curMs);
+    const width = Math.max(1, Math.round(box.w * scale));
+    const height = Math.max(1, Math.round(box.h * scale));
+
+    const kbFinal = Math.round(result.blob.size / 1024);
 
     const info = document.getElementById('webpInfo');
 
     if (info) {
 
-        info.textContent = `Ultimo WebP: ${width}×${height} px`
-            + (zoom ? ` · zoom ×${Math.round(k * 100) / 100} · area misurata sull'animazione: niente tagliato` : '');
+        const parts = [`Ultimo WebP: ${width}×${height} px`, `${kbFinal} KB`, `${result.frames} fotogrammi`];
+
+        if (zoom || compact) parts.push(`zoom ×${Math.round(scale * 100) / 100}`);
+
+        if (compact && reduced && scale < plan.scale) parts.push(`ridotto da ×${Math.round(plan.scale * 100) / 100} per stare sotto ${maxKb} KB`);
+
+        if (compact && q < quality) parts.push(`qualità abbassata (${Math.round(q * 100)}%) per il limite di peso`);
+
+        if (compact && maxKb > 0 && kbFinal > maxKb) parts.push(`ATTENZIONE: ancora sopra i ${maxKb} KB`);
+
+        if (zoom || compact) parts.push('area misurata sull\'animazione: niente tagliato');
+
+        info.textContent = parts.join(' · ');
     }
 
     await saveFile(
-        writer.finish(),
+        result.blob,
         `${fileLabel()}.webp`, 'WebP animato', 'image/webp', '.webp'
     );
 });
@@ -4773,6 +4849,8 @@ try {
 
     if (v) {
 
+        if (v.compact === false) webpEls.compact.checked = false;
+        if (Number(v.maxKb) >= 0 && v.maxKb !== undefined && v.maxKb !== null && v.maxKb !== '') webpEls.maxKb.value = Math.min(50000, Number(v.maxKb));
         if (v.zoom === false) webpEls.zoom.checked = false;
         if (Number(v.target) >= 200 && Number(v.target) <= 4096) webpEls.target.value = Number(v.target);
         if ([...webpEls.quality.options].some(op => op.value === String(v.quality))) webpEls.quality.value = String(v.quality);
@@ -4780,11 +4858,13 @@ try {
 
 } catch (e) { /* ignoro */ }
 
-[webpEls.zoom, webpEls.target, webpEls.quality].forEach(el => el.addEventListener('change', () => {
+[webpEls.compact, webpEls.maxKb, webpEls.zoom, webpEls.target, webpEls.quality].forEach(el => el.addEventListener('change', () => {
 
     try {
 
         localStorage.setItem(WEBP_KEY, JSON.stringify({
+            compact: webpEls.compact.checked,
+            maxKb: Number(webpEls.maxKb.value),
             zoom: webpEls.zoom.checked,
             target: Number(webpEls.target.value),
             quality: webpEls.quality.value

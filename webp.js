@@ -122,9 +122,14 @@ export function parseStillWebp(u) {
 }
 
 /*
-    width, height: misure del fotogramma (tutti uguali).
+    width, height: misure della tela (tutta l'animazione).
     hasAlpha: true se lo sfondo e' trasparente / semitrasparente.
     loop: 0 = all'infinito.
+
+    Ogni fotogramma puo' essere solo una PARTE della tela (x, y, larghezza,
+    altezza del suo WebP): sostituisce quei pixel e lascia tutto il resto
+    com'era (niente fusione con il fotogramma prima, niente "pulizia").
+    E' il trucco dei WebP piccoli: si salva solo cio' che cambia.
 */
 export function createWebpWriter(width, height, { loop = 0, hasAlpha = true } = {}) {
 
@@ -135,27 +140,51 @@ export function createWebpWriter(width, height, { loop = 0, hasAlpha = true } = 
 
     const frames = [];
 
+    const buildFrame = (f) => {
+
+        // X, Y (nel file a multipli di 2), larghezza-1, altezza-1, durata, flag:
+        // bit1 = niente fusione con il fotogramma prima, bit0 = niente "pulizia" (il fotogramma dopo parte da qui)
+        const head = new Uint8Array([
+            ...le24(f.x >> 1), ...le24(f.y >> 1), ...le24(f.w - 1), ...le24(f.h - 1), ...le24(f.dur), 0x02
+        ]);
+
+        return chunk('ANMF', concat([head, f.data]));
+    };
+
     return {
 
-        // bytes = file WebP statico del fotogramma; ms = quanto resta sullo schermo
-        addFrame(bytes, ms) {
+        // bytes = file WebP statico del fotogramma; ms = quanto resta sullo schermo;
+        // x, y = dove va sulla tela (numeri pari)
+        addFrame(bytes, ms, x = 0, y = 0) {
 
             const f = parseStillWebp(bytes);
 
-            if (f.width !== width || f.height !== height) {
+            if ((x & 1) || (y & 1)) {
 
-                throw new Error(`Il fotogramma ${f.width}×${f.height} non ha le misure del WebP (${width}×${height}).`);
+                throw new Error(`La posizione del fotogramma (${x}, ${y}) deve essere pari.`);
             }
 
-            const dur = Math.max(1, Math.min(0xffffff, Math.round(ms)));
+            if (x + f.width > width || y + f.height > height) {
 
-            // X, Y (a multipli di 2), larghezza-1, altezza-1, durata, flag:
-            // bit1 = niente fusione con il fotogramma prima, bit0 = niente "pulizia" (ogni fotogramma e' pieno)
-            const head = new Uint8Array([
-                ...le24(0), ...le24(0), ...le24(width - 1), ...le24(height - 1), ...le24(dur), 0x02
-            ]);
+                throw new Error(`Il fotogramma ${f.width}×${f.height} in (${x}, ${y}) esce dalla tela ${width}×${height}.`);
+            }
 
-            frames.push(chunk('ANMF', concat([head, f.data])));
+            if (!frames.length && (x !== 0 || y !== 0 || f.width !== width || f.height !== height)) {
+
+                throw new Error('Il primo fotogramma deve coprire tutta la tela.');
+            }
+
+            frames.push({ x, y, w: f.width, h: f.height, dur: Math.max(1, Math.min(0xffffff, Math.round(ms))), data: f.data });
+        },
+
+        // il fotogramma appena aggiunto resta sullo schermo ancora per "ms"
+        extendLast(ms) {
+
+            if (!frames.length) return;
+
+            const f = frames[frames.length - 1];
+
+            f.dur = Math.max(1, Math.min(0xffffff, f.dur + Math.round(ms)));
         },
 
         get count() { return frames.length; },
@@ -171,11 +200,120 @@ export function createWebpWriter(width, height, { loop = 0, hasAlpha = true } = 
             // colore di sfondo (B, G, R, A) trasparente, poi quante volte ripetere
             const anim = chunk('ANIM', new Uint8Array([0, 0, 0, 0, ...le16(loop)]));
 
-            const body = concat([new Uint8Array(tag('WEBP')), vp8x, anim, ...frames]);
+            const body = concat([new Uint8Array(tag('WEBP')), vp8x, anim, ...frames.map(buildFrame)]);
 
             const riff = concat([new Uint8Array(tag('RIFF')), new Uint8Array(le32(body.length)), body]);
 
             return new Blob([riff], { type: 'image/webp' });
         }
     };
+}
+
+/*
+    Crea l'intero WebP animato.
+
+    width, height: misure della tela; count: quanti fotogrammi; durations[i]: ms del fotogramma i;
+    render(i, canvas): disegna il fotogramma i (a tutta tela) sul canvas;
+    subRect: true = ogni fotogramma dopo il primo salva solo il rettangolo dei pixel cambiati
+             (senza perdita; i fotogrammi identici al precedente si fondono in uno solo);
+             false = ogni fotogramma e' intero.
+    quality: 1 = senza perdita (VP8L), meno = con perdita.
+*/
+export async function encodeAnimatedWebp({
+    width, height, count, durations, render,
+    hasAlpha = true, quality = 1, subRect = true, loop = 0, onProgress = null
+}) {
+
+    const writer = createWebpWriter(width, height, { loop, hasAlpha });
+
+    const cv = document.createElement('canvas');
+    const sub = document.createElement('canvas');
+
+    let prev = null;
+
+    for (let i = 0; i < count; i++) {
+
+        render(i, cv);
+
+        if (cv.width !== width || cv.height !== height) {
+
+            throw new Error(`Il fotogramma ${i + 1} e' ${cv.width}×${cv.height}, non ${width}×${height}.`);
+        }
+
+        let x = 0, y = 0, w = width, h = height;
+
+        if (subRect) {
+
+            const px = new Uint32Array(
+                cv.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, width, height).data.buffer
+            );
+
+            if (prev) {
+
+                let x0 = width, y0 = height, x1 = -1, y1 = -1;
+
+                for (let yy = 0; yy < height; yy++) {
+
+                    const row = yy * width;
+
+                    for (let xx = 0; xx < width; xx++) {
+
+                        if (px[row + xx] !== prev[row + xx]) {
+
+                            if (xx < x0) x0 = xx;
+                            if (xx > x1) x1 = xx;
+                            if (yy < y0) y0 = yy;
+                            if (yy > y1) y1 = yy;
+                        }
+                    }
+                }
+
+                // identico al precedente: resta sullo schermo piu' a lungo
+                if (x1 < 0) {
+
+                    writer.extendLast(durations[i]);
+
+                    if (onProgress) await onProgress(i + 1, count);
+
+                    continue;
+                }
+
+                // il WebP posiziona i fotogrammi a multipli di 2
+                x = x0 & ~1;
+                y = y0 & ~1;
+                w = x1 - x + 1;
+                h = y1 - y + 1;
+            }
+
+            prev = px;
+        }
+
+        let src = cv;
+
+        if (w !== width || h !== height) {
+
+            sub.width = w;
+            sub.height = h;
+
+            const sc = sub.getContext('2d');
+
+            sc.clearRect(0, 0, w, h);
+            sc.drawImage(cv, x, y, w, h, 0, 0, w, h);
+
+            src = sub;
+        }
+
+        const blob = await new Promise(resolve => src.toBlob(resolve, 'image/webp', quality));
+
+        if (!blob || blob.type !== 'image/webp') {
+
+            throw new Error('Questo browser non sa creare immagini WebP: usa Chrome o Edge.');
+        }
+
+        writer.addFrame(new Uint8Array(await blob.arrayBuffer()), durations[i], x, y);
+
+        if (onProgress) await onProgress(i + 1, count);
+    }
+
+    return { blob: writer.finish(), frames: writer.count };
 }
