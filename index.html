@@ -315,7 +315,7 @@
                     </button>
                     <div id="webpBox" style="display:flex;flex-direction:column;gap:6px;font-size:13px;color:#9ca3af">
                         <label
-                            title="Inquadra stretto il personaggio (la stessa inquadratura per tutte le animazioni) e ingrandisce a numero intero, così il personaggio riempie il video e i pixel restano nitidi. Senza, un'animazione piccola in una tela grande viene rimpicciolita dal telefono e sembra sfocata.">
+                            title="Misura i pixel veri di tutte le animazioni dell'unità (anche le più lunghe o larghe: scie, attacchi, bagliori), inquadra esattamente quello spazio, uguale per tutte le animazioni, e ingrandisce a numero intero: il personaggio riempie il video, i pixel restano nitidi e niente viene tagliato.">
                             <input type="checkbox" id="webpZoom" checked> WebP: zoom automatico sul personaggio
                         </label>
                         <label
@@ -340,6 +340,7 @@
                         style="background: linear-gradient(135deg, #0ea5e9, #0369a1);">
                         🖼️ ESPORTA WebP (iPhone, animato)
                     </button>
+                    <span id="webpInfo" style="font-size:11px;line-height:1.4;color:#9ca3af"></span>
                     <label
                         title="Video WebM con sfondo trasparente (si vede su browser Chrome/Edge/Firefox e in alcuni programmi). Se tolto, usa il colore e l'opacità di sfondo scelti.">
                         <input type="checkbox" id="videoTransparent" checked> Video: sfondo trasparente

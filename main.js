@@ -2614,24 +2614,14 @@ function limitScale(box, scale, maxMp) {
         : scale;
 }
 
-function exportPlan(scale, maxMp = 0, forceAuto = false) {
+function exportPlan(scale, maxMp = 0, forceBox = null) {
 
     const sequence = state.sequences[state.current];
 
     const shifts = activeShifts();
 
-    let box = exportBox(shifts, forceAuto);
-
-    // un po' d'aria attorno, cosi' niente tocca il bordo e nessun pezzo viene tagliato
-    if (forceAuto) {
-
-        const m = 4;
-
-        const w = Math.ceil(box.w + 2 * m);
-        const h = Math.ceil(box.h + 2 * m);
-
-        box = { x: box.x - m, y: box.y - m, w: w + (w % 2), h: h + (h % 2) };
-    }
+    // forceBox: area misurata sull'animazione vera (zoom automatico del WebP)
+    const box = forceBox || exportBox(shifts);
 
     scale = limitScale(box, scale, maxMp);
 
@@ -4530,7 +4520,9 @@ const webpEls = {
     quality: document.getElementById('webpQuality')
 };
 
-// ingrandimento intero che porta il lato lungo vicino a "target" pixel (mai oltre i limiti del browser)
+// ingrandimento intero che porta il lato lungo vicino a "target" pixel (mai oltre i limiti del browser).
+// Se l'animazione e' cosi' grande che nemmeno 1x ci sta, si rimpicciolisce il minimo necessario:
+// meglio un po' piu' piccola che tagliata.
 function webpZoomScale(box, target) {
 
     const long = Math.max(box.w, box.h);
@@ -4539,7 +4531,139 @@ function webpZoomScale(box, target) {
 
     while (k > 1 && (box.w * k > 4096 || box.h * k > 4096 || box.w * box.h * k * k > 12e6)) k--;
 
+    if (k === 1 && (box.w > 4096 || box.h > 4096 || box.w * box.h > 12e6)) {
+
+        return Math.min(4096 / long, Math.sqrt(12e6 / (box.w * box.h))) * 0.999;
+    }
+
     return k;
+}
+
+/*
+    AREA DELL'ANIMAZIONE, MISURATA SUI PIXEL
+
+    Non basta la geometria dei pezzi (rotazioni, scie, bagliori, passaggi
+    morbidi tra due frame possono uscire dal rettangolo calcolato): si
+    disegnano davvero tutti i fotogrammi di tutte le animazioni dell'unita'
+    (gli stessi dell'esportazione) e si cercano i pixel visibili piu' esterni
+    a sinistra, destra, sopra e sotto. Cosi' l'area e' quella che serve a
+    QUESTA unita' (stretta o larga, alta o lunga) e non viene tagliato niente.
+    Se un pezzo arriva al bordo dell'area di prova, la prova si rifa piu' larga.
+*/
+
+async function measureTightBox(fps, onProgress) {
+
+    const shifts = activeShifts();
+
+    const smooth = document.getElementById('exportSmooth').checked;
+
+    const base = exportBox(shifts, true);
+
+    const names = [...state.animNames, 'all'].filter((n, i, a) => a.indexOf(n) === i && state.sequences[n] && state.sequences[n].length);
+
+    // tutti i fotogrammi diversi di tutte le animazioni (gli stessi campioni dell'esportazione)
+    const jobs = [];
+
+    const seen = new Set();
+
+    for (const name of names) {
+
+        const sequence = state.sequences[name];
+
+        const totalTicks = sequenceTotalTicks(sequence);
+
+        const plan = planFrames({ sequence, shifts, totalTicks, totalCs: totalTicks * state.tickMs / 10, smooth }, fps);
+
+        for (let k = 0; k < plan.n; k++) {
+
+            const pieces = framePieces(plan, k);
+
+            const sig = JSON.stringify(pieces);
+
+            if (seen.has(sig)) continue;
+
+            seen.add(sig);
+
+            jobs.push(pieces);
+        }
+
+        await pause0();
+    }
+
+    let pad = Math.max(60, Math.max(base.w, base.h) * 0.5);
+
+    const cv = document.createElement('canvas');
+
+    for (let attempt = 0; attempt < 4; attempt++) {
+
+        const probe = { x: base.x - pad, y: base.y - pad, w: base.w + 2 * pad, h: base.h + 2 * pad };
+
+        const ts = Math.min(1, 1200 / Math.max(probe.w, probe.h));
+
+        let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+
+        let touches = false;
+
+        for (let i = 0; i < jobs.length; i++) {
+
+            Renderer.renderToCanvas(jobs[i], probe, ts, null, cv);
+
+            const W = cv.width;
+            const H = cv.height;
+
+            const d = new Uint32Array(cv.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, W, H).data.buffer);
+
+            // l'alfa e' il byte piu' alto del pixel (RGBA in memoria, little-endian)
+            for (let y = 0; y < H; y++) {
+
+                const row = y * W;
+
+                for (let x = 0; x < W; x++) {
+
+                    if ((d[row + x] >>> 24) >= 3) {
+
+                        if (x < x0) x0 = x;
+                        if (x > x1) x1 = x;
+                        if (y < y0) y0 = y;
+                        if (y > y1) y1 = y;
+                    }
+                }
+            }
+
+            if (i % 15 === 14) {
+
+                if (onProgress) onProgress(i + 1, jobs.length);
+
+                await pause0();
+            }
+        }
+
+        if (x0 > x1) return base;   // nessun pixel visibile: tengo la geometria
+
+        touches = x0 <= 1 || y0 <= 1 || x1 >= cv.width - 2 || y1 >= cv.height - 2;
+
+        if (touches && attempt < 3) {
+
+            pad *= 2.5;
+
+            continue;
+        }
+
+        // un po' d'aria attorno (almeno 4 unita' e almeno due pixel di misura), misure pari
+        const m = Math.ceil(2 / ts) + 4;
+
+        const ex0 = probe.x + x0 / ts - m;
+        const ey0 = probe.y + y0 / ts - m;
+        const ex1 = probe.x + (x1 + 1) / ts + m;
+        const ey1 = probe.y + (y1 + 1) / ts + m;
+
+        const w = Math.ceil(ex1 - ex0);
+        const h = Math.ceil(ey1 - ey0);
+
+        return { x: ex0, y: ey0, w: w + (w % 2), h: h + (h % 2) };
+    }
+
+    return base;
 }
 
 btnWebp.onclick = () => runExport(btnWebp, async (o) => {
@@ -4552,11 +4676,17 @@ btnWebp.onclick = () => runExport(btnWebp, async (o) => {
 
     let plan;
 
+    let k = 0;
+
     if (zoom) {
 
-        const probe = exportPlan(1, 0, true);
+        o.onStatus('Misuro l\'animazione…');
 
-        plan = planFrames(exportPlan(webpZoomScale(probe.box, target), 0, true), o.fps);
+        const tight = await measureTightBox(o.fps, (i, n) => o.onStatus(`Misuro l'animazione… ${Math.round(i / n * 100)}%`));
+
+        k = webpZoomScale(tight, target);
+
+        plan = planFrames(exportPlan(k, 0, tight), o.fps);
 
     } else {
 
@@ -4619,6 +4749,14 @@ btnWebp.onclick = () => runExport(btnWebp, async (o) => {
     }
 
     if (cur) await encode(cur, curMs);
+
+    const info = document.getElementById('webpInfo');
+
+    if (info) {
+
+        info.textContent = `Ultimo WebP: ${width}×${height} px`
+            + (zoom ? ` · zoom ×${Math.round(k * 100) / 100} · area misurata sull'animazione: niente tagliato` : '');
+    }
 
     await saveFile(
         writer.finish(),
