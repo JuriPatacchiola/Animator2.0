@@ -317,3 +317,56 @@ export async function encodeAnimatedWebp({
 
     return { blob: writer.finish(), frames: writer.count };
 }
+
+/*
+    Legge un WebP animato GIA' FATTO (i byte del file, non i fotogrammi che lo hanno creato) e dice com'e':
+    misure della tela, quanti fotogrammi, durata di ognuno, ripetizioni, trasparenza, senza perdita.
+*/
+export function inspectWebp(u) {
+
+    if (u.length < 20 || readTag(u, 0) !== 'RIFF' || readTag(u, 8) !== 'WEBP') throw new Error('Non e\' un WebP.');
+
+    const out = { width: 0, height: 0, animated: false, alpha: false, loop: null, frames: 0, durations: [], lossless: true, lossy: false, bytes: u.length };
+
+    let p = 12;
+
+    while (p + 8 <= u.length) {
+
+        const type = readTag(u, p);
+        const size = read32(u, p + 4);
+        const body = u.subarray(p + 8, p + 8 + size);
+
+        if (type === 'VP8X') {
+
+            out.animated = (body[0] & 0x02) !== 0;
+            out.alpha = (body[0] & 0x10) !== 0;
+            out.width = read24(body, 4) + 1;
+            out.height = read24(body, 7) + 1;
+
+        } else if (type === 'ANIM') {
+
+            out.loop = body[4] | (body[5] << 8);
+
+        } else if (type === 'ANMF') {
+
+            out.frames++;
+            out.durations.push(read24(body, 12));
+
+            // sotto-chunk del fotogramma (dopo i 16 byte di intestazione)
+            let q = 16;
+
+            while (q + 8 <= body.length) {
+
+                const t = readTag(body, q);
+
+                if (t === 'VP8 ') { out.lossless = false; out.lossy = true; }
+
+                q += 8 + read32(body, q + 4) + (read32(body, q + 4) & 1);
+            }
+        }
+
+        p += 8 + size + (size & 1);
+    }
+
+    return out;
+}

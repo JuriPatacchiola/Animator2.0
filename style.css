@@ -654,3 +654,110 @@ body.drag-over::after {
     border-top: 1px solid #2e3340;
     min-height: 20px
 }
+
+
+/* ---- Esporta per il sito: pannello dei controlli ---- */
+.site-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    background: rgba(8, 10, 14, .82);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px
+}
+
+.site-card {
+    width: min(820px, 100%);
+    max-height: 92vh;
+    display: flex;
+    flex-direction: column;
+    background: #161a22;
+    border: 1px solid #2e3340;
+    border-radius: 10px;
+    overflow: hidden
+}
+
+.site-head {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    padding: 10px 14px;
+    background: #1b2029;
+    border-bottom: 1px solid #2e3340;
+    color: #e5e7eb
+}
+
+.site-report {
+    padding: 12px 14px;
+    overflow: auto;
+    color: #d1d5db;
+    font-size: 13px;
+    line-height: 1.5
+}
+
+.site-report h4 {
+    margin: 14px 0 6px;
+    font-size: 13px;
+    color: #e5e7eb
+}
+
+.site-check {
+    display: flex;
+    gap: 8px;
+    padding: 5px 8px;
+    border-radius: 6px;
+    margin-bottom: 4px;
+    background: #1b2029
+}
+
+.site-check .ic {
+    width: 18px;
+    text-align: center;
+    flex: none
+}
+
+.site-check.ok .ic {
+    color: #34d399
+}
+
+.site-check.warn {
+    background: #2a2312
+}
+
+.site-check.warn .ic {
+    color: #fbbf24
+}
+
+.site-check.bad {
+    background: #2c1517
+}
+
+.site-check.bad .ic {
+    color: #f87171
+}
+
+.site-check small {
+    display: block;
+    color: #9ca3af
+}
+
+.site-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px
+}
+
+.site-table th,
+.site-table td {
+    text-align: left;
+    padding: 4px 6px;
+    border-bottom: 1px solid #2e3340;
+    white-space: nowrap
+}
+
+.site-table th {
+    color: #9ca3af;
+    font-weight: 600
+}

@@ -319,7 +319,7 @@
                             <input type="checkbox" id="webpCompact" checked> WebP compatto (file piccolo)
                         </label>
                         <label id="webpMaxKbRow"
-                            title="Peso massimo del file. Se il WebP lo supera, lo zoom scende (poi, se serve, la qualità). 0 = nessun limite. I tuoi file di riferimento stanno tutti sotto i 2 MB (2048 KB).">
+                            title="Peso massimo del file. Se il WebP lo supera, lo zoom scende (poi, se serve, la qualità). 0 = nessun limite. Non è la regola dell'iPhone (quella è la memoria, w×h×fotogrammi×4 sotto ~300 MB: la controlla «Esporta per il sito»).">
                             Peso massimo (KB)
                             <input type="number" id="webpMaxKb" min="0" max="50000" step="64" value="2048"
                                 style="width:76px;padding:4px;background:#2a2f3a;color:#fff;border:1px solid #4b5563;border-radius:4px">
@@ -351,6 +351,21 @@
                         🖼️ ESPORTA WebP (iPhone, animato)
                     </button>
                     <span id="webpInfo" style="font-size:11px;line-height:1.4;color:#9ca3af"></span>
+                    <div id="siteBox"
+                        style="display:flex;flex-direction:column;gap:6px;font-size:13px;color:#9ca3af;border:1px solid #3b4252;border-radius:8px;padding:8px">
+                        <label
+                            title="Nome dell'unità per i file: Nome-Unita-default / -idle / -atk. Gli spazi diventano trattini (es. «Fencer Vargas» → Fencer-Vargas-idle.webm). Viene proposto dal nome della cartella o del file caricato.">
+                            Nome unità (per i file del sito)
+                            <input type="text" id="siteName" placeholder="es. Fencer Vargas"
+                                style="width:100%;box-sizing:border-box;padding:6px;background:#2a2f3a;color:#fff;border:1px solid #4b5563;border-radius:4px;margin-top:4px">
+                        </label>
+                        <button id="downloadSite" class="primary-btn"
+                            title="Crea in un colpo solo i 6 file per il sito (default, idle e atk, ognuno in .webm e .webp): stessa tela per tutte e 3 le animazioni, scala 1:1, sfondo trasparente, tempi originali, ciclo infinito. Scegli la cartella dove salvarli (se il browser non lo permette, scarichi uno ZIP). Alla fine mostra i controlli."
+                            style="background: linear-gradient(135deg, #8b5cf6, #6d28d9);">
+                            🌐 ESPORTA PER IL SITO (6 file)
+                        </button>
+                        <span id="siteInfo" style="font-size:11px;line-height:1.4;color:#9ca3af"></span>
+                    </div>
                     <label
                         title="Video WebM con sfondo trasparente (si vede su browser Chrome/Edge/Firefox e in alcuni programmi). Se tolto, usa il colore e l'opacità di sfondo scelti.">
                         <input type="checkbox" id="videoTransparent" checked> Video: sfondo trasparente
@@ -377,6 +392,17 @@
         <main class="canvas-container">
             <canvas id="cv"></canvas>
         </main>
+    </div>
+
+    <div id="siteOverlay" class="site-overlay" style="display:none">
+        <div class="site-card">
+            <div class="site-head">
+                <b id="siteTitle">🌐 Esporta per il sito</b>
+                <span style="flex:1"></span>
+                <button id="siteClose" class="secondary-btn">✖ Chiudi</button>
+            </div>
+            <div id="siteReport" class="site-report"></div>
+        </div>
     </div>
 
     <div id="fvOverlay" class="asm-overlay" style="display:none">

@@ -16,7 +16,8 @@ import {
     sequenceTotalTicks,
     setSamSoft
 } from './smoothing.js';
-import { encodeAnimatedWebp } from './webp.js';
+import { encodeWebmAlpha, inspectWebm } from './webm.js';
+import { encodeAnimatedWebp, inspectWebp } from './webp.js';
 
 
 // ============================================================
@@ -184,6 +185,9 @@ const btnZip =
 
 const btnWebp =
     document.getElementById('downloadWebp');
+
+const btnSite =
+    document.getElementById('downloadSite');
 
 document.getElementById('resetView').onclick = () => {
 
@@ -615,6 +619,8 @@ function showLoaded(notes = []) {
 function loadMany(fileList) {
 
     const files = [...fileList];
+
+    guessUnitName(files);
 
     // un file .sam (con i suoi frammenti PNG): modo .sam
     if (files.some(f => /\.sam$/i.test(f.name))) {
@@ -3076,7 +3082,7 @@ async function runExport(button, job) {
 
     const label = button.innerText;
 
-    const exportButtons = [btnGif, btnApng, btnZip, btnVideo, btnWebp];
+    const exportButtons = [btnGif, btnApng, btnZip, btnVideo, btnWebp, btnSite];
 
     exportButtons.forEach(b => b.disabled = true);
 
@@ -4872,3 +4878,848 @@ try {
 
     } catch (e) { /* ignoro */ }
 }));
+
+
+
+// ============================================================
+// ESPORTA PER IL SITO
+//
+// Crea in un colpo solo i 6 file che usa il sito (per ogni unita':
+// default, idle e atk, ognuno in .webm per PC / Android e in .webp
+// per iPhone / Safari), senza cambiare l'animazione:
+//
+//  - UNA SOLA TELA per le 3 animazioni: il rettangolo che contiene tutti i
+//    pixel non trasparenti di tutti i fotogrammi di default + idle + atk,
+//    piu' 4 pixel di margine, misurato a scala 1:1. Stessa larghezza, stessa
+//    altezza, stesso punto di partenza: il personaggio fermo sta nello
+//    stesso pixel in tutte e 3;
+//  - scala 1:1 con lo sprite del gioco (niente ingrandimenti, niente
+//    ricampionamenti), sfondo trasparente (qualunque sia lo sfondo scelto
+//    per le altre esportazioni);
+//  - solo i fotogrammi veri, con i loro tempi originali (al millisecondo),
+//    ciclo infinito;
+//  - WebP: animato, senza perdita, con trasparenza (ogni fotogramma salva
+//    solo la parte che cambia: stessa immagine, file piu' leggero);
+//  - WebM: VP9 con trasparenza (yuva420p), fatto dal browser fotogramma per
+//    fotogramma (tempi esatti, niente registrazione in tempo reale).
+//
+// Alla fine si controllano i file veri (si rileggono) e si mostra il
+// risultato: stessa tela, primo fotogramma, trasparenza, memoria dell'iPhone.
+// ============================================================
+
+const siteEls = {
+    name: document.getElementById('siteName'),
+    info: document.getElementById('siteInfo'),
+    overlay: document.getElementById('siteOverlay'),
+    report: document.getElementById('siteReport'),
+    title: document.getElementById('siteTitle'),
+    close: document.getElementById('siteClose')
+};
+
+const SITE_MARGIN = 4;
+
+// l'iPhone decodifica ogni fotogramma a tela intera: larghezza x altezza x fotogrammi x 4 byte
+const SITE_MEMORY_LIMIT = 300e6;
+
+// tela riservata ai vecchi video ingranditi: il sito la riduce
+const SITE_FORBIDDEN = { w: 2614, h: 1535 };
+
+siteEls.name.addEventListener('input', () => { siteEls.name.dataset.edited = '1'; });
+
+siteEls.close.addEventListener('click', () => { siteEls.overlay.style.display = 'none'; });
+
+// nome proposto per i file: la cartella (o il file) appena caricati
+function guessUnitName(files) {
+
+    const f = files.find(x => /\.sam$/i.test(x.name))
+        || files.find(x => /cgg/i.test(x.name) && /\.(csv|cgg|txt)$/i.test(x.name))
+        || files[0];
+
+    if (!f) return;
+
+    const parts = String(f._path || f.webkitRelativePath || f.name).split('/');
+
+    const name = parts.length > 1 ? parts[parts.length - 2] : f.name.replace(/\.[^.]+$/, '');
+
+    state.unitGuess = name;
+
+    if (siteEls.name && !siteEls.name.dataset.edited) siteEls.name.value = name;
+}
+
+// "Fencer Vargas" -> "Fencer-Vargas" (nome di file)
+function siteFileBase() {
+
+    const raw = (siteEls.name.value || state.unitGuess || '').trim();
+
+    const n = raw.replace(/[\\/:*?"<>|]+/g, ' ').trim().replace(/\s+/g, '-').replace(/^[-.]+|[-.]+$/g, '');
+
+    return n || 'Unita';
+}
+
+/*
+    Le 3 animazioni del sito. default = la "Completa" (idle + move + attack, con le ripetizioni
+    scelte). Per un .sam si usano TUTTI i frame del file (non quelli ridotti dal "Frame da usare"):
+    senza passaggi morbidi, i frame ridotti cambierebbero l'animazione.
+*/
+function siteSequences() {
+
+    const seqOf = (k) => (state.samMode && state.samFull[k] && state.samFull[k].length) ? state.samFull[k] : state.sequences[k];
+
+    const all = [];
+
+    for (const name of state.animNames) {
+
+        const seq = seqOf(name);
+
+        if (!seq || !seq.length) continue;
+
+        const n = repeatInputs[name]
+            ? Math.max(0, Math.min(20, parseInt(repeatInputs[name].value, 10) || 0))
+            : 1;
+
+        for (let r = 0; r < n; r++) all.push(...seq);
+    }
+
+    return { default: all, idle: seqOf('idle') || [], atk: seqOf('atk') || [] };
+}
+
+// i fotogrammi veri di una sequenza: { pieces, ms, sig }. Di fila uguali = uno solo (durate sommate).
+// I tempi sono quelli originali (ticks x ms per tick), arrotondati al millisecondo senza accumulare errori.
+function siteKeyFrames(sequence) {
+
+    const shifts = activeShifts();
+
+    const list = [];
+
+    let cum = 0;
+
+    for (let i = 0; i < sequence.length; i++) {
+
+        const before = Math.round(cum * state.tickMs);
+
+        cum += frameDuration(sequence[i]);
+
+        const ms = Math.max(1, Math.round(cum * state.tickMs) - before);
+
+        const pieces = composeFrame({ sequence, framesDB: state.framesDB, shifts, index: i, t: 0, smooth: false }) || [];
+
+        const sig = JSON.stringify(pieces);
+
+        const last = list[list.length - 1];
+
+        if (last && last.sig === sig) last.ms += ms;
+        else list.push({ pieces, ms, sig });
+    }
+
+    return list;
+}
+
+/*
+    LA TELA COMUNE, misurata sui pixel veri a scala 1:1.
+
+    Si disegnano a 1:1 tutti i fotogrammi diversi di default + idle + atk e si cercano i pixel non
+    trasparenti piu' esterni (alfa > 0); il rettangolo e' quello, piu' 4 pixel per lato (e un pixel
+    in piu' a destra / in basso se la misura e' dispari, per i video). L'origine e' un numero
+    intero: ogni pixel del file finale e' identico a quello misurato.
+*/
+async function measureSiteBox(lists, sequences, onProgress) {
+
+    const shifts = activeShifts();
+
+    // punto di partenza: rettangolo dei pezzi (geometria), poi si misura davvero
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+
+    for (const seq of sequences) {
+
+        if (!seq.length) continue;
+
+        const b = sequenceBounds(seq, state.framesDB, shifts);
+
+        x0 = Math.min(x0, b.x);
+        y0 = Math.min(y0, b.y);
+        x1 = Math.max(x1, b.x + b.w);
+        y1 = Math.max(y1, b.y + b.h);
+    }
+
+    const base = x0 <= x1 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : { x: -100, y: -200, w: 200, h: 220 };
+
+    const jobs = [];
+
+    const seen = new Set();
+
+    for (const list of lists) {
+
+        for (const fr of list) {
+
+            if (seen.has(fr.sig)) continue;
+
+            seen.add(fr.sig);
+
+            jobs.push(fr.pieces);
+        }
+    }
+
+    let pad = Math.max(60, Math.max(base.w, base.h) * 0.5);
+
+    const cv = document.createElement('canvas');
+
+    for (let attempt = 0; attempt < 5; attempt++) {
+
+        const probe = {
+            x: Math.floor(base.x - pad),
+            y: Math.floor(base.y - pad),
+            w: Math.ceil(base.w + 2 * pad) + 2,
+            h: Math.ceil(base.h + 2 * pad) + 2
+        };
+
+        if (probe.w * probe.h > 60e6) throw new Error('Le animazioni escono troppo dal personaggio: area da misurare enorme.');
+
+        let ax0 = Infinity, ay0 = Infinity, ax1 = -1, ay1 = -1;
+
+        for (let i = 0; i < jobs.length; i++) {
+
+            Renderer.renderToCanvas(jobs[i], probe, 1, null, cv);
+
+            const W = cv.width;
+            const H = cv.height;
+
+            const d = new Uint32Array(cv.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, W, H).data.buffer);
+
+            // l'alfa e' il byte piu' alto del pixel (RGBA in memoria, little-endian)
+            for (let y = 0; y < H; y++) {
+
+                const row = y * W;
+
+                for (let x = 0; x < W; x++) {
+
+                    if ((d[row + x] >>> 24) !== 0) {
+
+                        if (x < ax0) ax0 = x;
+                        if (x > ax1) ax1 = x;
+                        if (y < ay0) ay0 = y;
+                        if (y > ay1) ay1 = y;
+                    }
+                }
+            }
+
+            if (i % 10 === 9) {
+
+                if (onProgress) onProgress(i + 1, jobs.length);
+
+                await pause0();
+            }
+        }
+
+        if (ax1 < 0) throw new Error('Nessun pixel visibile in nessun fotogramma.');
+
+        // un pezzo arriva al bordo dell'area di prova: potrebbe continuare, si rifa piu' larga
+        if (ax0 <= 0 || ay0 <= 0 || ax1 >= probe.w - 1 || ay1 >= probe.h - 1) {
+
+            pad *= 2.5;
+
+            continue;
+        }
+
+        const m = SITE_MARGIN;
+
+        let w = (ax1 - ax0 + 1) + 2 * m;
+        let h = (ay1 - ay0 + 1) + 2 * m;
+
+        const contentW = ax1 - ax0 + 1;
+        const contentH = ay1 - ay0 + 1;
+
+        if (w % 2) w++;
+        if (h % 2) h++;
+
+        return {
+            x: probe.x + ax0 - m,
+            y: probe.y + ay0 - m,
+            w,
+            h,
+            contentW,
+            contentH,
+            frames: jobs.length
+        };
+    }
+
+    throw new Error('Non riesco a misurare l\'animazione: arriva sempre al bordo dell\'area di prova.');
+}
+
+// controllo preliminare (sincrono: serve prima di aprire la finestra della cartella)
+function siteCheckReady() {
+
+    if (!Renderer.image || !state.framesDB.length) return { error: 'Carica prima un\'unità (CGG + CGS + PNG oppure un .sam).' };
+
+    const seqs = siteSequences();
+
+    const missing = ['idle', 'atk'].filter(k => !seqs[k].length);
+
+    if (missing.length) {
+
+        return {
+            error: `Manca l'animazione ${missing.join(' e ')}: il sito vuole default, idle e atk.`
+                + (state.samMode ? `\nAnimazioni del file .sam: ${state.animNames.map(k => state.samLabels[k] || k).join(', ')}.` : '')
+        };
+    }
+
+    if (!seqs.default.length) return { error: 'L\'animazione completa (default) è vuota: controlla le ripetizioni di Idle / Move / Attack.' };
+
+    return { seqs };
+}
+
+const kbText = (n) => n >= 1048576 ? (n / 1048576).toFixed(2) + ' MB' : Math.round(n / 1024) + ' KB';
+
+const esc = (t) => String(t).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+// primo fotogramma di una .webp letta DAL FILE (decodificatore del browser)
+async function siteDecodeWebp(bytes) {
+
+    if (typeof ImageDecoder === 'undefined') return null;
+
+    const dec = new ImageDecoder({ data: bytes, type: 'image/webp' });
+
+    try {
+
+        await dec.tracks.ready;
+
+        const { image } = await dec.decode({ frameIndex: 0 });
+
+        const cv = document.createElement('canvas');
+
+        cv.width = image.displayWidth;
+        cv.height = image.displayHeight;
+
+        const cx = cv.getContext('2d', { willReadFrequently: true });
+
+        cx.drawImage(image, 0, 0);
+
+        image.close();
+
+        return { w: cv.width, h: cv.height, data: cx.getImageData(0, 0, cv.width, cv.height).data };
+
+    } finally {
+
+        dec.close();
+    }
+}
+
+// primo fotogramma di un .webm letto DAL FILE (lettore video del browser, con la trasparenza)
+async function siteDecodeWebm(blob) {
+
+    const url = URL.createObjectURL(blob);
+
+    const v = document.createElement('video');
+
+    try {
+
+        v.muted = true;
+        v.preload = 'auto';
+        v.src = url;
+
+        await new Promise((ok, ko) => {
+
+            v.onloadeddata = ok;
+            v.onerror = () => ko(new Error('il browser non apre il .webm'));
+
+            setTimeout(() => ko(new Error('il browser non apre il .webm (tempo scaduto)')), 15000);
+        });
+
+        // il fotogramma a 0 s e' gia' pronto; il salto serve solo ad averlo certo
+        v.currentTime = 0;
+
+        await new Promise(ok => { v.onseeked = ok; setTimeout(ok, 400); });
+
+        const cv = document.createElement('canvas');
+
+        cv.width = v.videoWidth;
+        cv.height = v.videoHeight;
+
+        const cx = cv.getContext('2d', { willReadFrequently: true });
+
+        cx.drawImage(v, 0, 0);
+
+        return { w: cv.width, h: cv.height, duration: v.duration, data: cx.getImageData(0, 0, cv.width, cv.height).data };
+
+    } finally {
+
+        v.removeAttribute('src');
+        v.load();
+
+        URL.revokeObjectURL(url);
+    }
+}
+
+// riquadro dei pixel visibili (alfa oltre "thr") di un'immagine RGBA
+function siteContentBox(img, thr = 0) {
+
+    const { w, h, data } = img;
+
+    let x0 = w, y0 = h, x1 = -1, y1 = -1;
+
+    for (let y = 0; y < h; y++) {
+
+        for (let x = 0; x < w; x++) {
+
+            if (data[(y * w + x) * 4 + 3] > thr) {
+
+                if (x < x0) x0 = x;
+                if (x > x1) x1 = x;
+                if (y < y0) y0 = y;
+                if (y > y1) y1 = y;
+            }
+        }
+    }
+
+    return x1 < 0 ? null : { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
+}
+
+// gli angoli (4x4 pixel) sono tutti trasparenti?
+function siteCornersClear(img) {
+
+    const { w, h, data } = img;
+
+    const n = Math.min(4, w, h);
+
+    for (const [cx, cy] of [[0, 0], [w - n, 0], [0, h - n], [w - n, h - n]]) {
+
+        for (let y = 0; y < n; y++) {
+
+            for (let x = 0; x < n; x++) {
+
+                if (data[((cy + y) * w + cx + x) * 4 + 3] !== 0) return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+const sameBox = (a, b) => !!a && !!b && a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h;
+
+const boxText = (b) => b ? `${b.w}×${b.h} in (${b.x}, ${b.y})` : 'vuoto';
+
+/*
+    I CONTROLLI, fatti sui file veri appena creati (non sui fotogrammi che li hanno generati).
+    Ritorna [{ level: 'ok'|'warn'|'bad', title, detail }]
+*/
+async function siteVerify(box, out, names) {
+
+    const checks = [];
+
+    const add = (level, title, detail = '') => checks.push({ level, title, detail });
+
+    const wInfo = {};
+    const mInfo = {};
+
+    for (const n of names) {
+
+        wInfo[n] = inspectWebp(out[n].webpBytes);
+        mInfo[n] = inspectWebm(out[n].webmBytes);
+    }
+
+    // 1. WebP: stesse dimensioni
+    const wDims = names.map(n => `${wInfo[n].width}×${wInfo[n].height}`);
+
+    if (new Set(wDims).size === 1 && wInfo[names[0]].width === box.w && wInfo[names[0]].height === box.h) {
+
+        add('ok', `Le 3 .webp hanno dimensioni identiche: ${wDims[0]} px`, 'stessa tela per default, idle e atk');
+
+    } else {
+
+        add('bad', 'Le .webp NON hanno le stesse dimensioni', names.map((n, i) => `${n}: ${wDims[i]}`).join(' · '));
+    }
+
+    // 2. WebM: stesse dimensioni
+    const mDims = names.map(n => `${mInfo[n].width}×${mInfo[n].height}`);
+
+    if (new Set(mDims).size === 1 && mInfo[names[0]].width === box.w && mInfo[names[0]].height === box.h) {
+
+        add('ok', `I 3 .webm hanno dimensioni identiche: ${mDims[0]} px`, 'uguali anche a quelle delle .webp (stesso ritaglio comune)');
+
+    } else {
+
+        add('bad', 'I .webm NON hanno le stesse dimensioni', names.map((n, i) => `${n}: ${mDims[i]}`).join(' · '));
+    }
+
+    if (box.w === SITE_FORBIDDEN.w && box.h === SITE_FORBIDDEN.h) {
+
+        add('bad', `La tela è ${SITE_FORBIDDEN.w}×${SITE_FORBIDDEN.h}: il sito la riduce`, 'quella misura è riservata ai vecchi video ingranditi');
+
+    } else {
+
+        add('ok', `La tela non è la ${SITE_FORBIDDEN.w}×${SITE_FORBIDDEN.h} riservata ai vecchi video`);
+    }
+
+    // 3. lettura vera dei file (decodificatori del browser)
+    const wDec = {};
+    const mDec = {};
+
+    let decodeNote = '';
+
+    for (const n of names) {
+
+        try { wDec[n] = await siteDecodeWebp(out[n].webpBytes); } catch (e) { wDec[n] = null; decodeNote += ` .webp ${n}: ${e.message}.`; }
+
+        try { mDec[n] = await siteDecodeWebm(out[n].webmBlob); } catch (e) { mDec[n] = null; decodeNote += ` .webm ${n}: ${e.message}.`; }
+    }
+
+    const wOk = names.every(n => wDec[n]);
+    const mOk = names.every(n => mDec[n]);
+
+    // 4. primo fotogramma: default e idle, il personaggio e' nello stesso punto
+    const firstOf = (dec, n, fallback) => dec[n] || fallback[n];
+
+    // se il browser non sa rileggere un file, si usa il primo fotogramma disegnato (lo si dice)
+    const fallback = {};
+
+    if (!wOk || !mOk) {
+
+        const cv = document.createElement('canvas');
+
+        for (const n of names) {
+
+            Renderer.renderToCanvas(out[n].frames[0].pieces, box, 1, null, cv);
+
+            fallback[n] = { w: cv.width, h: cv.height, data: cv.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, cv.width, cv.height).data };
+        }
+    }
+
+    {
+        const a = firstOf(wDec, 'default', fallback);
+        const b = firstOf(wDec, 'idle', fallback);
+
+        const ba = siteContentBox(a);
+        const bb = siteContentBox(b);
+
+        let identical = a.w === b.w && a.h === b.h;
+
+        if (identical) {
+
+            for (let i = 0; i < a.data.length; i++) { if (a.data[i] !== b.data[i]) { identical = false; break; } }
+        }
+
+        const src = wOk ? 'dal file .webp' : 'sul fotogramma disegnato (il browser non rilegge le .webp)';
+
+        if (identical) add('ok', 'Primo fotogramma di default e idle: identico, il personaggio è nello stesso pixel', `riquadro ${boxText(ba)} · ${src}`);
+        else if (sameBox(ba, bb)) add('ok', 'Primo fotogramma di default e idle: personaggio nello stesso punto', `riquadro ${boxText(ba)} (le pose differiscono di poco) · ${src}`);
+        else add('warn', 'Primo fotogramma di default e idle: il personaggio NON è nello stesso punto', `default ${boxText(ba)} · idle ${boxText(bb)} · ${src}. Succede se il default non parte dall'idle (ripetizioni Idle a 0?) o se la posa è diversa.`);
+
+        // stessa cosa nei .webm (con un pixel di tolleranza: il video e' compresso)
+        if (mOk && (identical || sameBox(ba, bb))) {
+
+            const ma = siteContentBox(mDec.default, 8);
+            const mb = siteContentBox(mDec.idle, 8);
+
+            const near = !!ma && !!mb && Math.abs(ma.x - mb.x) <= 1 && Math.abs(ma.y - mb.y) <= 1 && Math.abs(ma.w - mb.w) <= 1 && Math.abs(ma.h - mb.h) <= 1;
+
+            if (near) add('ok', 'Anche nei .webm il primo fotogramma di default e idle sta nello stesso punto', `default ${boxText(ma)} · idle ${boxText(mb)}`);
+            else add('warn', 'Nei .webm il primo fotogramma di default e idle è in punti diversi', `default ${boxText(ma)} · idle ${boxText(mb)}`);
+        }
+    }
+
+    // 5. sfondo trasparente
+    {
+        const flags = names.every(n => wInfo[n].alpha) && names.every(n => mInfo[n].alphaMode === 1 && mInfo[n].alphaFrames === mInfo[n].frames);
+
+        const corners = names.every(n => siteCornersClear(firstOf(wDec, n, fallback))) && (!mOk || names.every(n => siteCornersClear(mDec[n])));
+
+        if (flags && corners) {
+
+            add('ok', 'Sfondo trasparente (canale alfa) in tutti e 6 i file', `.webp: alfa dichiarato e angoli trasparenti · .webm: AlphaMode 1, alfa in ogni fotogramma${mOk ? ', angoli trasparenti' : ''}`);
+
+        } else {
+
+            add('bad', 'Lo sfondo NON risulta trasparente in tutti i file', `alfa dichiarato: ${flags ? 'sì' : 'NO'} · angoli trasparenti: ${corners ? 'sì' : 'NO'}`);
+        }
+    }
+
+    // 6. memoria dell'iPhone
+    {
+        const parts = names.map(n => {
+
+            const w = wInfo[n];
+
+            return { n, bytes: w.width * w.height * w.frames * 4, frames: w.frames };
+        });
+
+        const over = parts.filter(p => p.bytes > SITE_MEMORY_LIMIT);
+
+        const txt = parts.map(p => `${p.n}: ${box.w}×${box.h}×${p.frames} fotogrammi×4 = ${(p.bytes / 1e6).toFixed(1)} MB`).join(' · ');
+
+        if (!over.length) add('ok', `Peso in memoria di ogni .webp sotto 300 MB (al massimo ${(Math.max(...parts.map(p => p.bytes)) / 1e6).toFixed(1)} MB)`, txt);
+        else add('warn', `Peso in memoria SOPRA 300 MB: ${over.map(p => `${p.n} ${(p.bytes / 1e6).toFixed(0)} MB`).join(', ')}. Su iPhone ${over.length > 1 ? 'queste .webp potrebbero non vedersi' : 'questa .webp potrebbe non vedersi'}`, txt + '. Non ho rimpicciolito il personaggio (come richiesto).');
+    }
+
+    // 7. formato delle .webp
+    {
+        const good = names.every(n => wInfo[n].animated && wInfo[n].lossless && wInfo[n].loop === 0);
+
+        if (good) add('ok', '.webp animate, senza perdita (lossless), ripetizione infinita');
+        else add('bad', '.webp non conformi', names.map(n => `${n}: ${wInfo[n].animated ? 'animata' : 'NON animata'}, ${wInfo[n].lossless ? 'lossless' : 'CON perdita'}, loop ${wInfo[n].loop}`).join(' · '));
+    }
+
+    // 8. .webm: VP9
+    {
+        const good = names.every(n => mInfo[n].codec === 'V_VP9');
+
+        if (good) add('ok', '.webm in VP9 con trasparenza (yuva420p), scala 1:1');
+        else add('bad', '.webm non VP9');
+    }
+
+    // 9. tempi
+    {
+        const sum = (a) => a.reduce((x, y) => x + y, 0);
+
+        const rows = names.map(n => ({
+            n,
+            want: sum(out[n].frames.map(f => f.ms)),
+            webp: sum(wInfo[n].durations),
+            webm: Math.round(mInfo[n].durationMs)
+        }));
+
+        const ok = rows.every(r => r.want === r.webp && r.want === r.webm);
+
+        const txt = rows.map(r => `${r.n}: originale ${r.want} ms · .webp ${r.webp} ms · .webm ${r.webm} ms`).join(' · ');
+
+        if (ok) add('ok', 'Tempi originali: durata uguale nei .webp, nei .webm e nell\'animazione del file', txt + ' · un solo giro, ripetuto all\'infinito');
+        else add('bad', 'Le durate non coincidono', txt);
+    }
+
+    // 10. stessa grandezza del personaggio in .webm e .webp
+    if (mOk) {
+
+        let worst = 0;
+
+        for (const n of names) {
+
+            const bw = siteContentBox(firstOf(wDec, n, fallback));
+            const bm = siteContentBox(mDec[n], 8);
+
+            if (bw && bm) worst = Math.max(worst, Math.abs(bw.w - bm.w), Math.abs(bw.h - bm.h));
+        }
+
+        if (worst <= 1) add('ok', 'Il personaggio ha la stessa grandezza in pixel nel .webm e nella .webp', `differenza massima ${worst} px (bordi del video compresso)`);
+        else add('warn', `Il personaggio nel .webm differisce di ${worst} px dalla .webp`);
+    }
+
+    if (decodeNote) add('warn', 'Alcuni file non si sono riletti nel browser', decodeNote.trim());
+
+    return checks;
+}
+
+function siteReportHtml({ checks, box, out, names, where, base, blocked }) {
+
+    const icons = { ok: '✔', warn: '⚠', bad: '✖' };
+
+    const bad = checks.filter(c => c.level === 'bad').length;
+    const warn = checks.filter(c => c.level === 'warn').length;
+
+    const head = blocked
+        ? `<div class="site-check bad"><span class="ic">✖</span><div><b>NON salvato: un controllo obbligatorio è fallito.</b><small>Non ho scritto nessun file, per non mettere sul sito file sbagliati.</small></div></div>`
+        : (bad || warn
+            ? `<div class="site-check warn"><span class="ic">⚠</span><div><b>Salvati i 6 file, ma guarda gli avvisi.</b><small>${esc(where)}</small></div></div>`
+            : `<div class="site-check ok"><span class="ic">✔</span><div><b>Fatto: tutti i controlli sono a posto.</b><small>${esc(where)}</small></div></div>`);
+
+    const rows = [];
+
+    for (const n of names) {
+
+        const o = out[n];
+
+        const wi = inspectWebp(o.webpBytes);
+        const mi = inspectWebm(o.webmBytes);
+
+        const mem = wi.width * wi.height * wi.frames * 4;
+
+        rows.push(`<tr><td>${esc(base)}-${n}.webm</td><td>${mi.width}×${mi.height}</td><td>${mi.frames}</td><td>${Math.round(mi.durationMs)} ms</td><td>${kbText(o.webmBytes.length)}</td><td>—</td></tr>`);
+        rows.push(`<tr><td>${esc(base)}-${n}.webp</td><td>${wi.width}×${wi.height}</td><td>${wi.frames}</td><td>${wi.durations.reduce((a, b) => a + b, 0)} ms</td><td>${kbText(o.webpBytes.length)}</td><td>${(mem / 1e6).toFixed(1)} MB</td></tr>`);
+    }
+
+    return `${head}
+        <h4>Controlli</h4>
+        ${checks.map(c => `<div class="site-check ${c.level}"><span class="ic">${icons[c.level]}</span><div>${esc(c.title)}${c.detail ? `<small>${esc(c.detail)}</small>` : ''}</div></div>`).join('')}
+        <h4>Tela comune e file</h4>
+        <div style="margin-bottom:6px">Rettangolo comune: <b>${box.w}×${box.h} px</b> (origine ${box.x}, ${box.y} nelle coordinate dell'animatore) = contenuto di tutti i fotogrammi ${box.contentW}×${box.contentH} px + ${SITE_MARGIN} px di margine${(box.w - box.contentW) !== 2 * SITE_MARGIN || (box.h - box.contentH) !== 2 * SITE_MARGIN ? ' (un pixel in più a destra / in basso se la misura era dispari, per il video)' : ''}. Scala 1:1, sfondo trasparente, ${box.frames} fotogrammi diversi misurati.</div>
+        <table class="site-table"><thead><tr><th>File</th><th>Tela</th><th>Fotogrammi</th><th>Durata</th><th>Peso</th><th>Memoria iPhone</th></tr></thead><tbody>${rows.join('')}</tbody></table>`;
+}
+
+async function siteSaveFiles(files, dirHandle, zipName) {
+
+    if (dirHandle) {
+
+        for (const f of files) {
+
+            const h = await dirHandle.getFileHandle(f.name, { create: true });
+
+            const w = await h.createWritable();
+
+            await w.write(f.blob);
+
+            await w.close();
+        }
+
+        return `Salvati nella cartella «${dirHandle.name}» (se c'erano file con lo stesso nome sono stati sostituiti).`;
+    }
+
+    const zip = createZipWriter();
+
+    for (const f of files) zip.addFile(f.name, new Uint8Array(await f.blob.arrayBuffer()));
+
+    await saveFile(zip.finish(), zipName, 'ZIP con i 6 file', 'application/zip', '.zip');
+
+    return `Questo browser non può scrivere in una cartella: scaricato uno ZIP (${zipName}) con i 6 file, da scompattare nella cartella dell'unità.`;
+}
+
+async function runSiteExport(pre, picking) {
+
+    const base = siteFileBase();
+
+    const exportBtns = [btnGif, btnApng, btnZip, btnVideo, btnWebp, btnSite];
+
+    const label = btnSite.innerText;
+
+    const onStatus = (t) => { btnSite.innerText = t; };
+
+    exportBtns.forEach(b => b.disabled = true);
+
+    try {
+
+        // la cartella: si sceglie subito (il browser la permette solo subito dopo il clic)
+        let dirHandle = null;
+
+        if (picking) {
+
+            try {
+
+                dirHandle = await picking;
+
+            } catch (e) {
+
+                if (e && e.name === 'AbortError') return;
+
+                console.warn('Cartella non disponibile, scarico uno ZIP:', e);
+            }
+        }
+
+        const names = ['default', 'idle', 'atk'];
+
+        const seqs = pre.seqs;
+
+        onStatus('Preparo i fotogrammi…');
+
+        const lists = {};
+
+        for (const n of names) lists[n] = siteKeyFrames(seqs[n]);
+
+        onStatus('Misuro la tela comune…');
+
+        const box = await measureSiteBox(names.map(n => lists[n]), names.map(n => seqs[n]), (i, n) => onStatus(`Misuro la tela comune… ${Math.round(i / n * 100)}%`));
+
+        if (Math.max(box.w, box.h) > 8192) throw new Error(`La tela comune è enorme (${box.w}×${box.h} px): controlla l'unità.`);
+
+        const out = {};
+
+        for (const n of names) {
+
+            const frames = lists[n];
+
+            const durations = frames.map(f => f.ms);
+
+            const render = (i, cv) => { Renderer.renderToCanvas(frames[i].pieces, box, 1, null, cv); };
+
+            const w = await encodeAnimatedWebp({
+                width: box.w,
+                height: box.h,
+                count: frames.length,
+                durations,
+                render,
+                hasAlpha: true,
+                quality: 1,
+                subRect: true,
+                loop: 0,
+                onProgress: async (i, c) => { onStatus(`${n}: WebP ${i}/${c}`); if (i % 3 === 0) await pause0(); }
+            });
+
+            const m = await encodeWebmAlpha({
+                width: box.w,
+                height: box.h,
+                count: frames.length,
+                durations,
+                render,
+                onProgress: async (i, c) => { onStatus(`${n}: WebM ${i}/${c}`); if (i % 3 === 0) await pause0(); }
+            });
+
+            out[n] = {
+                frames,
+                webpBlob: w.blob,
+                webpBytes: new Uint8Array(await w.blob.arrayBuffer()),
+                webmBlob: m.blob,
+                webmBytes: new Uint8Array(await m.blob.arrayBuffer())
+            };
+        }
+
+        onStatus('Controllo i file…');
+
+        const checks = await siteVerify(box, out, names);
+
+        const blocked = checks.some(c => c.level === 'bad');
+
+        let where = 'Nessun file scritto.';
+
+        if (!blocked) {
+
+            onStatus('Salvo i file…');
+
+            const files = [];
+
+            for (const n of names) {
+
+                files.push({ name: `${base}-${n}.webm`, blob: out[n].webmBlob });
+                files.push({ name: `${base}-${n}.webp`, blob: out[n].webpBlob });
+            }
+
+            where = await siteSaveFiles(files, dirHandle, `${base}-sito.zip`);
+        }
+
+        siteEls.title.textContent = `🌐 Esporta per il sito: ${base}`;
+
+        siteEls.report.innerHTML = siteReportHtml({ checks, box, out, names, where, base, blocked });
+
+        siteEls.overlay.style.display = 'flex';
+
+        siteEls.info.textContent = `Ultima esportazione: ${box.w}×${box.h} px · ${blocked ? 'NON salvato' : (checks.some(c => c.level !== 'ok') ? 'salvato con avvisi' : 'tutti i controlli ok')}`;
+
+        state.siteLast = { box, checks, where };
+
+    } catch (error) {
+
+        console.error('Errore esportazione per il sito:', error);
+
+        alert('Errore durante l\'esportazione per il sito: ' + (error && error.message ? error.message : error));
+
+    } finally {
+
+        exportBtns.forEach(b => b.disabled = false);
+
+        btnSite.innerText = label;
+    }
+}
+
+btnSite.onclick = () => {
+
+    const pre = siteCheckReady();
+
+    if (pre.error) {
+
+        alert(pre.error);
+
+        return;
+    }
+
+    // la finestra «scegli la cartella» va aperta subito, dentro il clic
+    const picking = window.showDirectoryPicker
+        ? window.showDirectoryPicker({ id: 'bf-site-export', mode: 'readwrite' })
+        : null;
+
+    runSiteExport(pre, picking);
+};
