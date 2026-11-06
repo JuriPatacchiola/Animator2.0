@@ -359,8 +359,20 @@
                             <input type="text" id="siteName" placeholder="es. Fencer Vargas"
                                 style="width:100%;box-sizing:border-box;padding:6px;background:#2a2f3a;color:#fff;border:1px solid #4b5563;border-radius:4px;margin-top:4px">
                         </label>
+                        <label
+                            title="Quanto grande esce il personaggio nei 6 file. ×1 = esattamente le misure dei dati dell'animatore (piccolo). ×2 = ingrandimento a numero intero con pixel netti (nessuna sfocatura): è la grandezza dei tuoi WebP v4. «Auto» sceglie la più grande (fino a ×4) che tiene ogni .webp sotto i 300 MB di memoria dell'iPhone. La tela comune resta uguale per le 3 animazioni.">
+                            Grandezza del personaggio
+                            <select id="siteScale"
+                                style="width:100%;padding:6px;background:#2a2f3a;color:#fff;border:1px solid #4b5563;border-radius:4px;margin-top:4px">
+                                <option value="1">×1 (piccolo)</option>
+                                <option value="2" selected>×2 (normale)</option>
+                                <option value="3">×3 (grande)</option>
+                                <option value="4">×4 (molto grande)</option>
+                                <option value="auto">Auto (max 300 MB)</option>
+                            </select>
+                        </label>
                         <button id="downloadSite" class="primary-btn"
-                            title="Crea in un colpo solo i 6 file per il sito (default, idle e atk, ognuno in .webm e .webp): stessa tela per tutte e 3 le animazioni, scala 1:1, sfondo trasparente, tempi originali, ciclo infinito. Scegli la cartella dove salvarli (se il browser non lo permette, scarichi uno ZIP). Alla fine mostra i controlli."
+                            title="Crea in un colpo solo i 6 file per il sito (default, idle e atk, ognuno in .webm e .webp): stessa tela per tutte e 3 le animazioni, grandezza a scelta (×2 di partenza), sfondo trasparente, tempi originali, ciclo infinito. Scegli la cartella dove salvarli (se il browser non lo permette, scarichi uno ZIP). Alla fine mostra i controlli."
                             style="background: linear-gradient(135deg, #8b5cf6, #6d28d9);">
                             🌐 ESPORTA PER IL SITO (6 file)
                         </button>

@@ -4909,6 +4909,7 @@ try {
 
 const siteEls = {
     name: document.getElementById('siteName'),
+    scale: document.getElementById('siteScale'),
     info: document.getElementById('siteInfo'),
     overlay: document.getElementById('siteOverlay'),
     report: document.getElementById('siteReport'),
@@ -4918,6 +4919,9 @@ const siteEls = {
 
 const SITE_MARGIN = 4;
 
+// ingrandimento massimo (a numero intero, pixel netti)
+const SITE_MAX_SCALE = 4;
+
 // l'iPhone decodifica ogni fotogramma a tela intera: larghezza x altezza x fotogrammi x 4 byte
 const SITE_MEMORY_LIMIT = 300e6;
 
@@ -4925,6 +4929,22 @@ const SITE_MEMORY_LIMIT = 300e6;
 const SITE_FORBIDDEN = { w: 2614, h: 1535 };
 
 siteEls.name.addEventListener('input', () => { siteEls.name.dataset.edited = '1'; });
+
+// grandezza scelta: ricordata dal browser
+const SITE_SCALE_KEY = 'animator.siteScale';
+
+try {
+
+    const v = localStorage.getItem(SITE_SCALE_KEY);
+
+    if (v && [...siteEls.scale.options].some(o => o.value === v)) siteEls.scale.value = v;
+
+} catch (e) { /* ignoro */ }
+
+siteEls.scale.addEventListener('change', () => {
+
+    try { localStorage.setItem(SITE_SCALE_KEY, siteEls.scale.value); } catch (e) { /* ignoro */ }
+});
 
 siteEls.close.addEventListener('click', () => { siteEls.overlay.style.display = 'none'; });
 
@@ -5015,14 +5035,65 @@ function siteKeyFrames(sequence) {
 }
 
 /*
-    LA TELA COMUNE, misurata sui pixel veri a scala 1:1.
+    LA TELA COMUNE, misurata sui pixel veri.
 
-    Si disegnano a 1:1 tutti i fotogrammi diversi di default + idle + atk e si cercano i pixel non
+    Si disegnano tutti i fotogrammi diversi di default + idle + atk e si cercano i pixel non
     trasparenti piu' esterni (alfa > 0); il rettangolo e' quello, piu' 4 pixel per lato (e un pixel
-    in piu' a destra / in basso se la misura e' dispari, per i video). L'origine e' un numero
-    intero: ogni pixel del file finale e' identico a quello misurato.
+    in piu' a destra / in basso se la misura e' dispari, per i video).
+
+    Prima si misura a 1:1 (veloce); se la grandezza scelta e' maggiore (x2, x3, x4: ingrandimento
+    a numero intero, pixel netti) si rimisura DAVVERO alla grandezza finale, solo attorno al
+    personaggio: i pixel del file finale sono quelli misurati. Il margine e' di 4 pixel del file
+    finale. L'origine del rettangolo e' un multiplo di 1/k di unita': i pixel dello sprite cadono
+    sempre sulla griglia del file (nessuna sfocatura).
 */
-async function measureSiteBox(lists, sequences, onProgress) {
+
+// cerca i pixel visibili (alfa > 0) in tutti i fotogrammi disegnati dentro "probe" (rettangolo in coordinate
+// dell'animatore) alla grandezza "scale"; ritorna i bordi in pixel del canvas di prova
+async function siteScan(jobs, probe, scale, cv, onProgress) {
+
+    let ax0 = Infinity, ay0 = Infinity, ax1 = -1, ay1 = -1;
+
+    let W = 0, H = 0;
+
+    for (let i = 0; i < jobs.length; i++) {
+
+        Renderer.renderToCanvas(jobs[i], probe, scale, null, cv);
+
+        W = cv.width;
+        H = cv.height;
+
+        const d = new Uint32Array(cv.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, W, H).data.buffer);
+
+        // l'alfa e' il byte piu' alto del pixel (RGBA in memoria, little-endian)
+        for (let y = 0; y < H; y++) {
+
+            const row = y * W;
+
+            for (let x = 0; x < W; x++) {
+
+                if ((d[row + x] >>> 24) !== 0) {
+
+                    if (x < ax0) ax0 = x;
+                    if (x > ax1) ax1 = x;
+                    if (y < ay0) ay0 = y;
+                    if (y > ay1) ay1 = y;
+                }
+            }
+        }
+
+        if (i % 10 === 9) {
+
+            if (onProgress) onProgress(i + 1, jobs.length);
+
+            await pause0();
+        }
+    }
+
+    return { ax0, ay0, ax1, ay1, W, H };
+}
+
+async function measureSiteBox(lists, sequences, onProgress, scaleChoice = 1) {
 
     const shifts = activeShifts();
 
@@ -5063,7 +5134,10 @@ async function measureSiteBox(lists, sequences, onProgress) {
 
     const cv = document.createElement('canvas');
 
-    for (let attempt = 0; attempt < 5; attempt++) {
+    // ---- passo 1: a 1:1, su un'area di prova ampia
+    let nat = null;
+
+    for (let attempt = 0; attempt < 5 && !nat; attempt++) {
 
         const probe = {
             x: Math.floor(base.x - pad),
@@ -5074,75 +5148,114 @@ async function measureSiteBox(lists, sequences, onProgress) {
 
         if (probe.w * probe.h > 60e6) throw new Error('Le animazioni escono troppo dal personaggio: area da misurare enorme.');
 
-        let ax0 = Infinity, ay0 = Infinity, ax1 = -1, ay1 = -1;
+        const r = await siteScan(jobs, probe, 1, cv, onProgress);
 
-        for (let i = 0; i < jobs.length; i++) {
-
-            Renderer.renderToCanvas(jobs[i], probe, 1, null, cv);
-
-            const W = cv.width;
-            const H = cv.height;
-
-            const d = new Uint32Array(cv.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, W, H).data.buffer);
-
-            // l'alfa e' il byte piu' alto del pixel (RGBA in memoria, little-endian)
-            for (let y = 0; y < H; y++) {
-
-                const row = y * W;
-
-                for (let x = 0; x < W; x++) {
-
-                    if ((d[row + x] >>> 24) !== 0) {
-
-                        if (x < ax0) ax0 = x;
-                        if (x > ax1) ax1 = x;
-                        if (y < ay0) ay0 = y;
-                        if (y > ay1) ay1 = y;
-                    }
-                }
-            }
-
-            if (i % 10 === 9) {
-
-                if (onProgress) onProgress(i + 1, jobs.length);
-
-                await pause0();
-            }
-        }
-
-        if (ax1 < 0) throw new Error('Nessun pixel visibile in nessun fotogramma.');
+        if (r.ax1 < 0) throw new Error('Nessun pixel visibile in nessun fotogramma.');
 
         // un pezzo arriva al bordo dell'area di prova: potrebbe continuare, si rifa piu' larga
-        if (ax0 <= 0 || ay0 <= 0 || ax1 >= probe.w - 1 || ay1 >= probe.h - 1) {
+        if (r.ax0 <= 0 || r.ay0 <= 0 || r.ax1 >= r.W - 1 || r.ay1 >= r.H - 1) {
 
             pad *= 2.5;
 
             continue;
         }
 
-        const m = SITE_MARGIN;
+        nat = { x0: probe.x + r.ax0, y0: probe.y + r.ay0, x1: probe.x + r.ax1, y1: probe.y + r.ay1 };
+    }
 
-        let w = (ax1 - ax0 + 1) + 2 * m;
-        let h = (ay1 - ay0 + 1) + 2 * m;
+    if (!nat) throw new Error('Non riesco a misurare l\'animazione: arriva sempre al bordo dell\'area di prova.');
 
+    const natW = nat.x1 - nat.x0 + 1;
+    const natH = nat.y1 - nat.y0 + 1;
+
+    const m = SITE_MARGIN;
+
+    // ---- grandezza: x1, x2, x3, x4 oppure "auto" (la piu' grande che tiene ogni .webp sotto il limite dell'iPhone)
+    let k = 1;
+
+    if (scaleChoice === 'auto') {
+
+        const most = Math.max(...lists.map(l => l.length));
+
+        for (let c = SITE_MAX_SCALE; c >= 1; c--) {
+
+            if ((natW * c + 2 * m + 1) * (natH * c + 2 * m + 1) * most * 4 <= SITE_MEMORY_LIMIT * 0.95) { k = c; break; }
+        }
+
+    } else {
+
+        k = Math.max(1, Math.min(SITE_MAX_SCALE, Math.round(Number(scaleChoice) || 1)));
+    }
+
+    const finish = (X, Y, ax0, ay0, ax1, ay1) => {
+
+        // X, Y = origine del canvas di prova in pixel del file; ax0.. = pixel visibili in quel canvas
         const contentW = ax1 - ax0 + 1;
         const contentH = ay1 - ay0 + 1;
+
+        let w = contentW + 2 * m;
+        let h = contentH + 2 * m;
 
         if (w % 2) w++;
         if (h % 2) h++;
 
+        const fx = X + ax0 - m;
+        const fy = Y + ay0 - m;
+
         return {
-            x: probe.x + ax0 - m,
-            y: probe.y + ay0 - m,
+            // misure del file
             w,
             h,
             contentW,
             contentH,
+            scale: k,
+            // rettangolo da disegnare, in coordinate dell'animatore (a ingrandimento k dà esattamente w x h pixel)
+            rx: fx / k,
+            ry: fy / k,
+            rw: w / k,
+            rh: h / k,
             frames: jobs.length
         };
+    };
+
+    if (k === 1) return finish(0, 0, nat.x0, nat.y0, nat.x1, nat.y1);
+
+    // ---- passo 2: si rimisura alla grandezza vera, solo attorno al personaggio
+    let grow = 3;
+
+    for (let attempt = 0; attempt < 5; attempt++) {
+
+        const win = { x: nat.x0 - grow, y: nat.y0 - grow, w: natW + 2 * grow, h: natH + 2 * grow };
+
+        const r = await siteScan(jobs, win, k, cv, onProgress);
+
+        if (r.ax1 < 0) throw new Error('Nessun pixel visibile in nessun fotogramma.');
+
+        if (r.ax0 <= 0 || r.ay0 <= 0 || r.ax1 >= r.W - 1 || r.ay1 >= r.H - 1) {
+
+            grow = Math.ceil(grow * 2.5);
+
+            continue;
+        }
+
+        return finish(win.x * k, win.y * k, r.ax0, r.ay0, r.ax1, r.ay1);
     }
 
-    throw new Error('Non riesco a misurare l\'animazione: arriva sempre al bordo dell\'area di prova.');
+    throw new Error('Non riesco a misurare l\'animazione alla grandezza scelta.');
+}
+
+// il rettangolo da disegnare (coordinate dell'animatore) e l'ingrandimento
+const siteRenderBox = (box) => ({ x: box.rx, y: box.ry, w: box.rw, h: box.rh });
+
+const siteRenderFrame = (pieces, box, cv) => Renderer.renderToCanvas(pieces, siteRenderBox(box), box.scale, null, cv);
+
+// quanta memoria userebbe una .webp con "frames" fotogrammi a un'altra grandezza (stima)
+function siteMemoryAt(box, frames, k) {
+
+    const w = Math.ceil(box.contentW / box.scale * k) + 2 * SITE_MARGIN + 1;
+    const h = Math.ceil(box.contentH / box.scale * k) + 2 * SITE_MARGIN + 1;
+
+    return w * h * frames * 4;
 }
 
 // controllo preliminare (sincrono: serve prima di aprire la finestra della cartella)
@@ -5378,7 +5491,7 @@ async function siteVerify(box, out, names) {
 
         for (const n of names) {
 
-            Renderer.renderToCanvas(out[n].frames[0].pieces, box, 1, null, cv);
+            siteRenderFrame(out[n].frames[0].pieces, box, cv);
 
             fallback[n] = { w: cv.width, h: cv.height, data: cv.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, cv.width, cv.height).data };
         }
@@ -5447,7 +5560,22 @@ async function siteVerify(box, out, names) {
         const txt = parts.map(p => `${p.n}: ${box.w}×${box.h}×${p.frames} fotogrammi×4 = ${(p.bytes / 1e6).toFixed(1)} MB`).join(' · ');
 
         if (!over.length) add('ok', `Peso in memoria di ogni .webp sotto 300 MB (al massimo ${(Math.max(...parts.map(p => p.bytes)) / 1e6).toFixed(1)} MB)`, txt);
-        else add('warn', `Peso in memoria SOPRA 300 MB: ${over.map(p => `${p.n} ${(p.bytes / 1e6).toFixed(0)} MB`).join(', ')}. Su iPhone ${over.length > 1 ? 'queste .webp potrebbero non vedersi' : 'questa .webp potrebbe non vedersi'}`, txt + '. Non ho rimpicciolito il personaggio (come richiesto).');
+        else {
+
+            // a quale grandezza ci starebbe?
+            let fit = 0;
+
+            for (let c = box.scale - 1; c >= 1 && !fit; c--) {
+
+                if (over.every(p => siteMemoryAt(box, p.frames, c) <= SITE_MEMORY_LIMIT * 0.97)) fit = c;
+            }
+
+            const hint = fit
+                ? `A ×${fit} starebbe sotto i 300 MB: cambia «Grandezza» e rifai l'esportazione, oppure scegli «Auto».`
+                : (box.scale > 1 ? 'Anche a ×1 resterebbe sopra: l\'animazione ha troppi fotogrammi o la tela è troppo grande.' : 'L\'animazione ha troppi fotogrammi o la tela è troppo grande.');
+
+            add('warn', `Peso in memoria SOPRA 300 MB: ${over.map(p => `${p.n} ${(p.bytes / 1e6).toFixed(0)} MB`).join(', ')}. Su iPhone ${over.length > 1 ? 'queste .webp potrebbero non vedersi' : 'questa .webp potrebbe non vedersi'}`, `${txt}. Non ho rimpicciolito il personaggio da solo. ${hint}`);
+        }
     }
 
     // 7. formato delle .webp
@@ -5462,7 +5590,7 @@ async function siteVerify(box, out, names) {
     {
         const good = names.every(n => mInfo[n].codec === 'V_VP9');
 
-        if (good) add('ok', '.webm in VP9 con trasparenza (yuva420p), scala 1:1');
+        if (good) add('ok', `.webm in VP9 con trasparenza (yuva420p), grandezza ×${box.scale}`);
         else add('bad', '.webm non VP9');
     }
 
@@ -5492,13 +5620,13 @@ async function siteVerify(box, out, names) {
 
         for (const n of names) {
 
-            const bw = siteContentBox(firstOf(wDec, n, fallback));
+            const bw = siteContentBox(firstOf(wDec, n, fallback), 8);
             const bm = siteContentBox(mDec[n], 8);
 
             if (bw && bm) worst = Math.max(worst, Math.abs(bw.w - bm.w), Math.abs(bw.h - bm.h));
         }
 
-        if (worst <= 1) add('ok', 'Il personaggio ha la stessa grandezza in pixel nel .webm e nella .webp', `differenza massima ${worst} px (bordi del video compresso)`);
+        if (worst <= 1) add('ok', 'Il personaggio ha la stessa grandezza in pixel nel .webm e nella .webp', `differenza massima ${worst} px (misurati sui pixel con alfa > 8, uguale in entrambi)`);
         else add('warn', `Il personaggio nel .webm differisce di ${worst} px dalla .webp`);
     }
 
@@ -5543,7 +5671,7 @@ function siteReportHtml({ checks, box, out, names, where, base, blocked, saveFai
         <h4>Controlli</h4>
         ${checks.map(c => `<div class="site-check ${c.level}"><span class="ic">${icons[c.level]}</span><div>${esc(c.title)}${c.detail ? `<small>${esc(c.detail)}</small>` : ''}</div></div>`).join('')}
         <h4>Tela comune e file</h4>
-        <div style="margin-bottom:6px">Rettangolo comune: <b>${box.w}×${box.h} px</b> (origine ${box.x}, ${box.y} nelle coordinate dell'animatore) = contenuto di tutti i fotogrammi ${box.contentW}×${box.contentH} px + ${SITE_MARGIN} px di margine${(box.w - box.contentW) !== 2 * SITE_MARGIN || (box.h - box.contentH) !== 2 * SITE_MARGIN ? ' (un pixel in più a destra / in basso se la misura era dispari, per il video)' : ''}. Scala 1:1, sfondo trasparente, ${box.frames} fotogrammi diversi misurati.</div>
+        <div style="margin-bottom:6px">Rettangolo comune: <b>${box.w}×${box.h} px</b> (origine ${Math.round(box.rx * 1000) / 1000}, ${Math.round(box.ry * 1000) / 1000} nelle coordinate dell'animatore) = contenuto di tutti i fotogrammi ${box.contentW}×${box.contentH} px + ${SITE_MARGIN} px di margine${(box.w - box.contentW) !== 2 * SITE_MARGIN || (box.h - box.contentH) !== 2 * SITE_MARGIN ? ' (un pixel in più a destra / in basso se la misura era dispari, per il video)' : ''}. Grandezza <b>×${box.scale}</b>${box.scale === 1 ? ' (1:1 con i dati dell\'animatore)' : ' (ingrandimento intero, pixel netti, nessuna sfocatura)'}, sfondo trasparente, ${box.frames} fotogrammi diversi misurati.</div>
         <table class="site-table"><thead><tr><th>File</th><th>Tela</th><th>Fotogrammi</th><th>Durata</th><th>Peso</th><th>Memoria iPhone</th></tr></thead><tbody>${rows.join('')}</tbody></table>`;
 }
 
@@ -5685,7 +5813,7 @@ async function runSiteExport(pre, picking) {
 
         onStatus('Misuro la tela comune…');
 
-        const box = await measureSiteBox(names.map(n => lists[n]), names.map(n => seqs[n]), (i, n) => onStatus(`Misuro la tela comune… ${Math.round(i / n * 100)}%`));
+        const box = await measureSiteBox(names.map(n => lists[n]), names.map(n => seqs[n]), (i, n) => onStatus(`Misuro la tela comune… ${Math.round(i / n * 100)}%`), siteEls.scale.value);
 
         if (Math.max(box.w, box.h) > 8192) throw new Error(`La tela comune è enorme (${box.w}×${box.h} px): controlla l'unità.`);
 
@@ -5697,7 +5825,7 @@ async function runSiteExport(pre, picking) {
 
             const durations = frames.map(f => f.ms);
 
-            const render = (i, cv) => { Renderer.renderToCanvas(frames[i].pieces, box, 1, null, cv); };
+            const render = (i, cv) => { siteRenderFrame(frames[i].pieces, box, cv); };
 
             const w = await encodeAnimatedWebp({
                 width: box.w,
@@ -5764,7 +5892,7 @@ async function runSiteExport(pre, picking) {
 
         siteEls.overlay.style.display = 'flex';
 
-        siteEls.info.textContent = `Ultima esportazione: ${box.w}×${box.h} px · ${blocked ? 'NON salvato' : (saveFailed.length ? `${saveFailed.length} file non scritti in cartella (scaricato lo ZIP)` : (checks.some(c => c.level !== 'ok') ? 'salvato con avvisi' : 'tutti i controlli ok'))}`;
+        siteEls.info.textContent = `Ultima esportazione: ${box.w}×${box.h} px (×${box.scale}) · ${blocked ? 'NON salvato' : (saveFailed.length ? `${saveFailed.length} file non scritti in cartella (scaricato lo ZIP)` : (checks.some(c => c.level !== 'ok') ? 'salvato con avvisi' : 'tutti i controlli ok'))}`;
 
         state.siteLast = { box, checks, where };
 
