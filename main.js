@@ -1,6 +1,7 @@
 import { createAPNGWriter, createZipWriter } from './apng.js';
+import { animFromName, buildApngUnit, decodeApng, expandLinks, fetchApngs, isApng, unitIdFromNames } from './apngimport.js';
 import { initAssembler } from './assembler.js';
-import { Eraser } from './eraser.js';
+import { EK, Eraser } from './eraser.js';
 import { createGifWriter, createPaletteBuilder } from './gif.js';
 import { Parser } from './parser.js';
 import { Renderer } from './renderer.js';
@@ -77,6 +78,12 @@ const state = {
 
     // true se l'unita' viene da un file .sam (frammenti PNG, niente CGG)
     samMode: false,
+
+    // true se l'unita' e' stata ricostruita da APNG (un disegno intero per fotogramma)
+    imported: false,
+
+    // numero dell'unita' (dai nomi dei file importati), serve ai nomi dei file salvati
+    unitId: '',
 
     // .sam: sequenze complete del file e nomi mostrati (state.sequences ha quelle ridotte ai frame principali)
     samFull: {},
@@ -394,7 +401,8 @@ function applyAutoShadow() {
 
     if (!state.framesDBOrig.length) return;
 
-    state.framesDB = chkAutoShadow.checked
+    // un'unita' da APNG ha gia' tutto nel disegno (ombra compresa): niente ombra aggiunta
+    state.framesDB = (chkAutoShadow.checked && !state.imported)
         ? withMissingShadows(state.framesDBOrig)
         : state.framesDBOrig;
 
@@ -1047,11 +1055,21 @@ function showLoaded(notes = []) {
     multiInfo.innerText = lines.concat(notes).join('\n');
 }
 
-function loadMany(fileList) {
+async function loadMany(fileList) {
 
     const files = [...fileList];
 
     guessUnitName(files);
+
+    // animazioni APNG (unita' senza CGG / CGS / .sam)
+    const apngs = await apngCandidates(files);
+
+    if (apngs.length) {
+
+        await loadApngFiles(apngs);
+
+        return;
+    }
 
     // un file .sam (con i suoi frammenti PNG): modo .sam
     if (files.some(f => /\.sam$/i.test(f.name))) {
@@ -1279,6 +1297,8 @@ async function loadSamFiles(files) {
 
         eraserRefresh();
 
+        apngRefresh();
+
         multiInfo.innerText = [
             `✔ SAM: ${samFile.name}`,
             `✔ ${unit.spriteCount - unit.missing.length} / ${unit.spriteCount} frammenti PNG`,
@@ -1312,6 +1332,423 @@ if (multiDir) {
         event.target.parentElement.classList.remove('loaded');
     });
 }
+
+
+// ============================================================
+// IMPORTA ANIMAZIONI APNG
+//
+// Per le unita' di cui esistono solo le animazioni gia' montate (APNG di
+// idle / atk / move, per esempio dalla libreria del gioco): si scelgono i
+// file, si trascinano sulla pagina o si scrive il numero dell'unita' / i
+// link. Ogni fotogramma diventa un disegno intero dell'unita': si anima, si
+// ritocca con la gomma e si esporta come tutte le altre. "Salva come unita'"
+// li trasforma in PNG + CGG + CGS veri, da caricare quando vuoi.
+// ============================================================
+
+const apngEls = {
+    files: document.getElementById('apngFiles'),
+    links: document.getElementById('apngLinks'),
+    fetch: document.getElementById('apngFetch'),
+    proxy: document.getElementById('apngProxy'),
+    info: document.getElementById('apngInfo'),
+    save: document.getElementById('apngSave')
+};
+
+const APNG_PREF_KEY = 'animator.apng';
+
+try {
+
+    const v = JSON.parse(localStorage.getItem(APNG_PREF_KEY) || 'null');
+
+    if (v) {
+
+        if (typeof v.links === 'string') apngEls.links.value = v.links;
+        if (typeof v.proxy === 'string') apngEls.proxy.value = v.proxy;
+    }
+
+} catch (e) { /* ignoro */ }
+
+function apngSavePrefs() {
+
+    try {
+
+        localStorage.setItem(APNG_PREF_KEY, JSON.stringify({ links: apngEls.links.value, proxy: apngEls.proxy.value.trim() }));
+
+    } catch (e) { /* ignoro */ }
+}
+
+function apngSay(text) {
+
+    apngEls.info.textContent = text;
+}
+
+// il pulsante "Salva come unita'" serve quando c'e' un'unita' CGG / APNG (non per i .sam)
+function apngRefresh() {
+
+    apngEls.save.disabled = state.samMode || !state.framesDBOrig.length || !Renderer.image;
+}
+
+// quali file di un gruppo sono APNG (o PNG con il nome di un'animazione, senza CGG / CGS / .sam)
+async function apngCandidates(files) {
+
+    if (files.some(f => /\.(sam|csv|cgg|cgs|txt)$/i.test(f.name))) return [];
+
+    const out = [];
+
+    for (const f of files) {
+
+        if (!/\.png$/i.test(f.name)) continue;
+
+        let anim = false;
+
+        try { anim = isApng(await f.arrayBuffer()); } catch (e) { /* illeggibile: non e' un APNG */ }
+
+        if (anim || animFromName(f.name)) out.push(f);
+    }
+
+    return out;
+}
+
+async function loadApngFiles(files, extraNotes = []) {
+
+    const notes = [...extraNotes];
+
+    try {
+
+        const found = {};
+
+        for (const f of files) {
+
+            let a = animFromName(f.name);
+
+            // un solo file e il nome non dice cosa e': e' l'idle
+            if (!a && files.length === 1) {
+
+                a = 'idle';
+
+                notes.push(`ℹ «${f.name}» non dice se è idle, atk o move: lo uso come Idle.`);
+            }
+
+            if (!a) { notes.push(`⚠ Non so che animazione sia «${f.name}» (il nome deve contenere idle, atk o move): ignorato.`); continue; }
+
+            if (found[a]) { notes.push(`⚠ Due file per «${a}»: uso il primo, ignorato ${f.name}.`); continue; }
+
+            found[a] = f;
+        }
+
+        if (!Object.keys(found).length) throw new Error('nessun file riconosciuto');
+
+        const anims = [];
+
+        for (const a of ['idle', 'atk', 'move']) {
+
+            if (!found[a]) continue;
+
+            const name = found[a].name;
+
+            apngSay(`Lettura di ${name}…`);
+
+            const dec = await decodeApng(await found[a].arrayBuffer(), (n, m) => apngSay(`Lettura di ${name}: fotogramma ${n} / ${m}`));
+
+            anims.push({ name: a, dec });
+        }
+
+        const unit = buildApngUnit(anims, TICK_MS);
+
+        // ---- l'unita' entra nell'animatore come un'unita' CGG
+        Renderer.image = unit.atlas;
+
+        setStandardMode();
+
+        state.imported = true;
+
+        state.unitId = unitIdFromNames(files.map(f => f.name));
+
+        state.framesDBOrig = unit.framesDB;
+        state.framesDB = unit.framesDB;
+
+        // niente "blocco a terra" ne' ombra aggiunta: l'APNG e' gia' composto cosi'
+        state.shifts = unit.framesDB.map(() => ({ x: 0, y: 0 }));
+
+        state.lock = false;
+        chkLock.checked = false;
+        chkLock.disabled = true;
+        chkAutoShadow.disabled = true;
+
+        applyAutoShadow();
+
+        for (const name of ['idle', 'atk', 'move']) {
+
+            state.sequences[name] = unit.sequences[name] || [];
+
+            const seq = state.sequences[name];
+
+            while (seq.length > 1 && !(state.framesDBOrig[seq[seq.length - 1].id] || []).some(p => p && p.w > 0 && p.h > 0)) seq.pop();
+        }
+
+        rebuildAll();
+
+        Eraser.attach(Renderer.image, state.framesDBOrig, state.framesDB);
+
+        eraserRefresh();
+
+        apngRefresh();
+
+        // numero dell'unita' come nome proposto per i file del sito
+        if (state.unitId) {
+
+            state.unitGuess = state.unitId;
+
+            if (siteEls.name && !siteEls.name.dataset.edited) siteEls.name.value = state.unitId;
+        }
+
+        // misure diverse tra le animazioni: allineate in basso al centro
+        const sizes = Object.entries(unit.sizes);
+
+        if (new Set(sizes.map(([, z]) => z.w + 'x' + z.h)).size > 1) {
+
+            notes.push('⚠ Le animazioni hanno misure diverse: le ho allineate in basso al centro. Se una è spostata, dimmelo.');
+        }
+
+        const label = { idle: 'Idle', atk: 'Attack', move: 'Move' };
+
+        const lines = [
+            `✔ Unità importata da APNG${state.unitId ? ' (' + state.unitId + ')' : ''}`,
+            ...sizes.map(([k, z]) => {
+
+                const ms = Math.round(sequenceTotalTicks(unit.sequences[k]) * TICK_MS);
+
+                return `${label[k]}: ${z.frames} fotogramm${z.frames === 1 ? 'o' : 'i'} · ${z.w}×${z.h} · ${(ms / 1000).toFixed(2).replace('.', ',')} s${z.animated ? '' : ' (PNG fermo)'}`;
+            }),
+            `${unit.cellCount} disegni diversi sul foglio`,
+            ...notes
+        ];
+
+        multiInfo.innerText = lines.join('\n');
+
+        apngSay(lines.slice(1).join('\n'));
+
+        state.downloadCount = 1;
+
+        beginPlayback();
+
+    } catch (error) {
+
+        console.error('Errore APNG:', error);
+
+        apngSay(`⚠ Non riesco a importare: ${error.message}`);
+
+        multiInfo.innerText = `⚠ APNG: ${error.message}`;
+    }
+}
+
+apngEls.files.addEventListener('change', async (event) => {
+
+    const list = [...event.target.files];
+
+    event.target.value = '';
+
+    if (!list.length) return;
+
+    guessUnitName(list);
+
+    await loadApngFiles(list);
+});
+
+apngEls.fetch.addEventListener('click', async () => {
+
+    const items = expandLinks(apngEls.links.value);
+
+    apngSavePrefs();
+
+    if (!items.length) {
+
+        apngSay('Scrivi il numero dell\'unità (per esempio 10323) oppure incolla il link di un APNG.');
+
+        return;
+    }
+
+    apngEls.fetch.disabled = true;
+
+    apngSay(`Scarico ${items.length} file…`);
+
+    try {
+
+        const { files, failed } = await fetchApngs(items, apngEls.proxy.value.trim());
+
+        const notes = failed.map(f => `⚠ ${f.url.split('/').pop()}: ${f.why}`);
+
+        if (!files.length) {
+
+            const blocked = failed.some(f => f.blocked);
+
+            apngSay([
+                ...notes,
+                blocked
+                    ? 'Il sito non lascia scaricare i file da questa pagina. Soluzione sicura: apri il link nel browser, tasto destro → «Salva immagine con nome», poi trascina qui i file (oppure usa «Importa APNG dal PC»).'
+                    : 'Controlla il numero o il link.'
+            ].join('\n'));
+
+            return;
+        }
+
+        await loadApngFiles(files, notes);
+
+    } finally {
+
+        apngEls.fetch.disabled = false;
+    }
+});
+
+apngEls.proxy.addEventListener('change', apngSavePrefs);
+
+
+// ---- "Salva come unita'": PNG + CGG + CGS veri (con le cancellazioni della gomma gia' applicate)
+
+async function saveUnitFiles() {
+
+    if (state.samMode || !Renderer.image || !state.framesDBOrig.length) {
+
+        alert('Carica prima un\'unità (PNG + CGG + CGS oppure APNG).');
+
+        return;
+    }
+
+    apngEls.save.disabled = true;
+
+    try {
+
+        const img = Renderer.image;
+
+        const rows = state.framesDBOrig;
+
+        // ritagli del foglio nuovo: quelli con pixel cancellati sono copie a parte
+        const cells = new Map();
+
+        const cellKey = (p, crop) => crop
+            ? 'e|' + (p[EK] || '') + '|' + p.sx + ',' + p.sy + ',' + p.w + ',' + p.h
+            : 'o|' + p.sx + ',' + p.sy + ',' + p.w + ',' + p.h;
+
+        for (const row of rows) {
+
+            for (const p of row || []) {
+
+                if (!p || !(p.w > 0) || !(p.h > 0)) continue;
+
+                const crop = Eraser.cropFor(img, p);
+
+                const k = cellKey(p, crop);
+
+                if (!cells.has(k)) cells.set(k, { w: p.w | 0, h: p.h | 0, crop, sx: p.sx, sy: p.sy, nx: 0, ny: 0 });
+            }
+        }
+
+        const GAP = 1;
+
+        let area = 0, widest = 0;
+
+        for (const c of cells.values()) { area += (c.w + GAP) * (c.h + GAP); widest = Math.max(widest, c.w + GAP); }
+
+        const width = Math.min(8192, Math.max(widest, 1024, Math.ceil(Math.sqrt(area) * 1.25)));
+
+        let x = 0, y = 0, rowH = 0;
+
+        for (const c of cells.values()) {
+
+            if (x + c.w + GAP > width) { x = 0; y += rowH + GAP; rowH = 0; }
+
+            c.nx = x;
+            c.ny = y;
+
+            x += c.w + GAP;
+
+            rowH = Math.max(rowH, c.h);
+        }
+
+        const height = Math.max(1, y + rowH + GAP);
+
+        const atlas = document.createElement('canvas');
+
+        atlas.width = width;
+        atlas.height = height;
+
+        const actx = atlas.getContext('2d');
+
+        for (const c of cells.values()) {
+
+            if (c.crop) actx.drawImage(c.crop, c.nx, c.ny);
+            else actx.drawImage(img, c.sx, c.sy, c.w, c.h, c.nx, c.ny, c.w, c.h);
+        }
+
+        const png = await new Promise(ok => atlas.toBlob(ok, 'image/png'));
+
+        if (!png) throw new Error('non riesco a creare il PNG');
+
+        // CGG: riga = id del frame; per pezzo: x,y,flip,blend,opacita',rotazione,sx,sy,w,h,pagina
+        const cgg = rows.map((row, ri) => {
+
+            const pieces = (row || []).filter(p => p);
+
+            const parts = [ri, pieces.length];
+
+            for (const p of pieces) {
+
+                const c = (p.w > 0 && p.h > 0) ? cells.get(cellKey(p, Eraser.cropFor(img, p))) : null;
+
+                parts.push(
+                    Number(p.x) || 0, Number(p.y) || 0, Number(p.flipType) || 0, Number(p.blendMode) || 0,
+                    Number.isFinite(p.opacity) ? p.opacity : 100, Number(p.rotate) || 0,
+                    c ? c.nx : p.sx, c ? c.ny : p.sy, p.w, p.h, Number(p.pageId) || 0
+                );
+            }
+
+            return parts.join(',');
+
+        }).join('\n') + '\n';
+
+        const id = state.unitId || siteFileBase().replace(/[^0-9A-Za-z_-]+/g, '') || 'unit';
+
+        const enc = new TextEncoder();
+
+        const zip = createZipWriter();
+
+        zip.addFile('image.png', new Uint8Array(await png.arrayBuffer()));
+        zip.addFile(`unit_cgg_${id}.csv`, enc.encode(cgg));
+
+        const names = [];
+
+        for (const name of ['idle', 'atk', 'move']) {
+
+            const seq = state.sequences[name];
+
+            if (!seq || !seq.length) continue;
+
+            const text = seq.map(f => [f.id, Number(f.xOffset) || 0, Number(f.yOffset) || 0, Math.max(1, Math.round(Number(f.duration) || 1))].join(',')).join('\n') + '\n';
+
+            zip.addFile(`unit_${name}_cgs_${id}.csv`, enc.encode(text));
+
+            names.push(name);
+        }
+
+        await saveFile(zip.finish(), `${id}-unita.zip`, 'ZIP', 'application/zip', '.zip');
+
+        apngSay(`💾 Salvato ${id}-unita.zip: image.png, unit_cgg_${id}.csv e i CGS di ${names.join(', ')}.\nDecomprimilo e, con «Carica TUTTI i file insieme», l'unità si apre come tutte le altre (con le cancellazioni della gomma già applicate).`);
+
+    } catch (error) {
+
+        console.error('Errore salvataggio unità:', error);
+
+        apngSay(`⚠ Non riesco a salvare l'unità: ${error.message}`);
+
+    } finally {
+
+        apngRefresh();
+    }
+}
+
+apngEls.save.addEventListener('click', saveUnitFiles);
+
+apngRefresh();
 
 
 // ============================================================
@@ -1844,6 +2281,9 @@ function setStandardMode() {
 
     state.samMode = false;
 
+    state.imported = false;
+    state.unitId = '';
+
     state.animNames = ['idle', 'move', 'atk'];
 
     state.sequences = { idle: [], atk: [], move: [], all: [] };
@@ -1876,6 +2316,9 @@ function setStandardMode() {
 function setSamMode(unit) {
 
     state.samMode = true;
+
+    state.imported = false;
+    state.unitId = '';
 
     state.animNames = unit.order;
 
@@ -2113,6 +2556,8 @@ btnStart.onclick = async () => {
         Eraser.attach(Renderer.image, state.framesDBOrig, state.framesDB);
 
         eraserRefresh();
+
+        apngRefresh();
 
         beginPlayback();
 

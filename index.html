@@ -42,6 +42,34 @@
                     costruiscilo</button>
             </div>
 
+            <div class="upload-group" id="apngBox">
+                <h3>1b. Unità senza file: importa APNG</h3>
+                <label class="custom-file-upload"
+                    title="Per le unità di cui hai solo le animazioni già montate (APNG di idle, atk, move). Scegli i file (anche tutti insieme) o trascinali sulla pagina: il nome deve contenere idle, atk o move (per esempio 10323_idle.png). Ogni fotogramma diventa un disegno che puoi ritoccare con la gomma ed esportare.">
+                    <input type="file" id="apngFiles" multiple accept=".png,image/png"> 🖼 Importa APNG dal PC
+                </label>
+                <textarea id="apngLinks" rows="3" spellcheck="false"
+                    placeholder="Numero dell'unità (es. 10323) oppure i link degli APNG, uno per riga"
+                    title="Scrivi solo il numero dell'unità (idle, atk e move vengono cercati nella libreria) oppure incolla il link di un APNG (provo anche gli altri due) oppure più link, uno per riga. Se il sito non permette il download dalla pagina, scarica i file a mano e importali dal PC."
+                    style="width:100%;box-sizing:border-box;background:#2a2f3a;color:#e5e7eb;border:1px solid #4b5563;border-radius:4px;padding:6px;font-size:12px;resize:vertical"></textarea>
+                <button id="apngFetch" class="secondary-btn" style="width:100%;margin-top:6px">⬇ Scarica dai
+                    link</button>
+                <details style="margin-top:6px;font-size:11px;color:#9ca3af">
+                    <summary style="cursor:pointer">Se il sito blocca il download…</summary>
+                    <div style="margin-top:4px;line-height:1.4">Scarica i file a mano (tasto destro sul link → «Salva
+                        con nome») e usa «Importa APNG dal PC». Facoltativo: un servizio che aggira il blocco, da
+                        scrivere qui davanti all'indirizzo (decidi tu se fidarti):</div>
+                    <input type="text" id="apngProxy" spellcheck="false" placeholder="https://… ?url="
+                        style="width:100%;box-sizing:border-box;margin-top:4px;background:#2a2f3a;color:#e5e7eb;border:1px solid #4b5563;border-radius:4px;padding:5px;font-size:11px">
+                </details>
+                <div id="apngInfo"
+                    style="font-size:11px;line-height:1.5;color:#9ca3af;white-space:pre-line;margin:8px 0;word-break:break-word">
+                </div>
+                <button id="apngSave" class="secondary-btn" style="width:100%" disabled
+                    title="Trasforma l'unità che vedi in file veri: image.png + CGG + CGS (in un ZIP), con le cancellazioni della gomma già applicate. Poi li carichi quando vuoi con «Carica TUTTI i file insieme».">
+                    💾 Salva come unità (PNG + CGG + CGS)</button>
+            </div>
+
             <div class="upload-group">
                 <h3>2. Animazioni (CGS)</h3>
                 <label class="custom-file-upload">
