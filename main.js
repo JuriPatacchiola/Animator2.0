@@ -1,5 +1,6 @@
 import { createAPNGWriter, createZipWriter } from './apng.js';
 import { initAssembler } from './assembler.js';
+import { Eraser } from './eraser.js';
 import { createGifWriter, createPaletteBuilder } from './gif.js';
 import { Parser } from './parser.js';
 import { Renderer } from './renderer.js';
@@ -396,6 +397,9 @@ function applyAutoShadow() {
     state.framesDB = chkAutoShadow.checked
         ? withMissingShadows(state.framesDBOrig)
         : state.framesDBOrig;
+
+    // ogni pezzo riceve la sua chiave "riga:numero" (serve alla gomma)
+    Eraser.tag(state.framesDB);
 }
 
 chkAutoShadow.addEventListener(
@@ -476,7 +480,14 @@ let isDragging = false;
 
 Renderer.canvas.addEventListener(
     'mousedown',
-    () => {
+    (event) => {
+
+        // con la gomma accesa il tasto sinistro / destro cancella: la vista si sposta col tasto centrale
+        if (Eraser.on && event.button !== 1) {
+            return;
+        }
+
+        if (Eraser.on) event.preventDefault();
 
         isDragging = true;
     }
@@ -513,6 +524,426 @@ window.addEventListener(
         renderCurrentFrame();
     }
 );
+
+
+// ============================================================
+// GOMMA (cancella pixel)
+//
+// Pennello sull'anteprima. Le cancellazioni sono maschere (vedi eraser.js):
+// i file originali non cambiano e valgono in tutte le esportazioni.
+// ============================================================
+
+const ERASER_KEY = 'animator.eraser';
+
+const eraserUI = {
+    toggle: document.getElementById('eraserToggle'),
+    opts: document.getElementById('eraserOpts'),
+    size: document.getElementById('eraserSize'),
+    sizeNum: document.getElementById('eraserSizeNum'),
+    scope: document.getElementById('eraserScope'),
+    top: document.getElementById('eraserTop'),
+    undo: document.getElementById('eraserUndo'),
+    redo: document.getElementById('eraserRedo'),
+    clearFrame: document.getElementById('eraserClearFrame'),
+    clearAll: document.getElementById('eraserClearAll'),
+    info: document.getElementById('eraserInfo')
+};
+
+// pointer = dove sta il mouse (coordinate dell'animatore); drawing = tratto in corso
+const eraserState = { pointer: null, drawing: null, note: '' };
+
+try {
+
+    const v = JSON.parse(localStorage.getItem(ERASER_KEY) || 'null');
+
+    if (v) {
+
+        if (v.size >= 1 && v.size <= 40) Eraser.size = Math.round(v.size);
+        if (v.scope === 'frame' || v.scope === 'sheet') Eraser.scope = v.scope;
+        Eraser.topOnly = !!v.top;
+    }
+
+} catch (e) { /* ignoro */ }
+
+eraserUI.size.value = Eraser.size;
+eraserUI.sizeNum.value = Eraser.size;
+eraserUI.scope.value = Eraser.scope;
+eraserUI.top.checked = Eraser.topOnly;
+
+function eraserSave() {
+
+    try {
+
+        localStorage.setItem(ERASER_KEY, JSON.stringify({ size: Eraser.size, scope: Eraser.scope, top: Eraser.topOnly }));
+
+    } catch (e) { /* ignoro */ }
+}
+
+function eraserSetSize(v) {
+
+    Eraser.size = Math.max(1, Math.min(40, Math.round(Number(v) || 1)));
+
+    eraserUI.size.value = Eraser.size;
+    eraserUI.sizeNum.value = Eraser.size;
+
+    eraserSave();
+
+    renderCurrentFrame();
+}
+
+eraserUI.size.addEventListener('input', () => eraserSetSize(eraserUI.size.value));
+eraserUI.sizeNum.addEventListener('change', () => eraserSetSize(eraserUI.sizeNum.value));
+
+eraserUI.scope.addEventListener('change', () => {
+
+    Eraser.scope = eraserUI.scope.value;
+
+    eraserSave();
+
+    eraserRefresh();
+
+    eraserUI.scope.blur();
+});
+
+eraserUI.top.addEventListener('change', () => {
+
+    Eraser.topOnly = eraserUI.top.checked;
+
+    eraserSave();
+
+    eraserUI.top.blur();
+});
+
+// riga del file e fotogramma mostrato adesso
+function eraserFrame() {
+
+    const sequence = state.sequences[state.current];
+
+    if (!sequence || !sequence.length) return null;
+
+    const f = sequence[state.frameIndex];
+
+    return f ? { id: f.id, n: state.frameIndex + 1, of: sequence.length } : null;
+}
+
+// pezzi del fotogramma esatto che si vede (il primo e' quello in primo piano)
+function eraserPieces() {
+
+    const sequence = state.sequences[state.current];
+
+    if (!sequence || !sequence.length) return null;
+
+    return composeFrame({
+        sequence,
+        framesDB: state.framesDB,
+        shifts: activeShifts(),
+        index: state.frameIndex,
+        t: 0,
+        smooth: false
+    });
+}
+
+// punto del mouse nelle coordinate dell'animatore (come le disegna Renderer.draw)
+function eraserWorld(ev) {
+
+    const cv = Renderer.canvas;
+
+    const r = cv.getBoundingClientRect();
+
+    const dx = (ev.clientX - r.left) * (cv.width / r.width);
+    const dy = (ev.clientY - r.top) * (cv.height / r.height);
+
+    const k = Renderer.scale * Renderer.dpr;
+
+    return {
+        x: (dx - cv.width / 2 - Renderer.offsetX * Renderer.dpr) / k,
+        y: (dy - cv.height / 2 - Renderer.offsetY * Renderer.dpr) / k
+    };
+}
+
+const eraserRunning = () => state.isPlaying && !state.isPaused;
+
+function eraserRefresh() {
+
+    eraserUI.undo.disabled = !Eraser.canUndo;
+    eraserUI.redo.disabled = !Eraser.canRedo;
+
+    const st = Eraser.stats();
+
+    const fr = eraserFrame();
+
+    const here = fr ? Eraser.countInRow(fr.id) : 0;
+
+    eraserUI.clearFrame.disabled = !here;
+    eraserUI.clearAll.disabled = !(st.sheet || st.inst);
+
+    const lines = [];
+
+    if (Eraser.on) {
+
+        if (fr) lines.push(`Fotogramma ${fr.n} / ${fr.of} (riga ${fr.id} del file)${here ? ` · ${here} pixel cancellati qui` : ''}`);
+
+        if (eraserRunning()) lines.push('⏸ Metti in pausa per cancellare (qui sotto il pulsante PAUSA).');
+
+        if (Renderer.scale < 1) lines.push(`🔍 Zoom ${Math.round(Renderer.scale * 100)}%: ingrandisci con la rotella per colpire pixel precisi.`);
+
+        if (Eraser.scope === 'sheet') lines.push('⚠ «Tutto il foglio»: il pixel sparisce da tutti i fotogrammi che lo usano.');
+    }
+
+    if (st.sheet || st.inst) {
+
+        const parts = [];
+
+        if (st.inst) parts.push(`${st.inst} pixel in ${st.frames} fotogramm${st.frames === 1 ? 'a' : 'i'}`);
+        if (st.sheet) parts.push(`${st.sheet} pixel sul foglio`);
+
+        lines.push(`Cancellati: ${parts.join(' + ')} (valgono anche nelle esportazioni).`);
+    }
+
+    if (Eraser.saveError) lines.push('⚠ Non riesco a salvare le cancellazioni nel browser: restano finché non chiudi la pagina.');
+
+    if (eraserState.note) lines.push(eraserState.note);
+
+    eraserUI.info.textContent = lines.join('\n');
+}
+
+Eraser.onChange = () => {
+
+    eraserRefresh();
+
+    renderCurrentFrame();
+};
+
+function eraserApplyUI() {
+
+    eraserUI.toggle.textContent = Eraser.on ? '🧽 Gomma: accesa (clic per spegnere)' : '🧽 Gomma: spenta';
+    eraserUI.toggle.style.background = Eraser.on ? '#be123c' : '';
+    eraserUI.toggle.style.borderColor = Eraser.on ? '#fb7185' : '';
+
+    eraserUI.opts.style.display = Eraser.on ? 'flex' : 'none';
+
+    Renderer.canvas.style.cursor = Eraser.on ? 'crosshair' : '';
+
+    eraserRefresh();
+
+    renderCurrentFrame();
+}
+
+eraserUI.toggle.onclick = () => {
+
+    if (!Eraser.on) {
+
+        const seq = state.sequences[state.current];
+
+        if (!state.isPlaying || !seq || !seq.length) {
+
+            alert("Carica un'unità e avvia l'animazione prima di usare la gomma.");
+
+            return;
+        }
+
+        Eraser.on = true;
+
+        // si lavora su un fotogramma fermo
+        state.isPaused = true;
+
+        btnPause.innerText = '▶ RIPRENDI';
+
+    } else {
+
+        Eraser.on = false;
+
+        eraserState.pointer = null;
+        eraserState.drawing = null;
+    }
+
+    eraserState.note = '';
+
+    eraserApplyUI();
+};
+
+eraserUI.undo.onclick = () => { Eraser.undo(); };
+eraserUI.redo.onclick = () => { Eraser.redo(); };
+
+eraserUI.clearFrame.onclick = () => {
+
+    const fr = eraserFrame();
+
+    if (fr) Eraser.clearFrame(fr.id);
+};
+
+eraserUI.clearAll.onclick = () => { Eraser.clearAll(); };
+
+// cerchio del pennello sullo schermo (non entra mai nelle esportazioni)
+function drawEraserCursor() {
+
+    if (!Eraser.on || !eraserState.pointer || !Renderer.ctx || state.hideOverlay) return;
+
+    const ctx = Renderer.ctx;
+    const cv = Renderer.canvas;
+
+    const k = Renderer.scale * Renderer.dpr;
+
+    const [cx, cy] = Eraser.snap(eraserState.pointer.x, eraserState.pointer.y);
+
+    const r = Math.max(Math.max(1, Math.round(Eraser.size)) / 2, 4 / k);
+
+    ctx.save();
+
+    ctx.translate(cv.width / 2 + Renderer.offsetX * Renderer.dpr, cv.height / 2 + Renderer.offsetY * Renderer.dpr);
+    ctx.scale(k, k);
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+
+    ctx.lineWidth = 3 / k;
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.75)';
+    ctx.stroke();
+
+    ctx.lineWidth = 1.5 / k;
+    ctx.strokeStyle = eraserState.drawing && eraserState.drawing.restore ? '#34d399' : '#fb7185';
+    ctx.stroke();
+
+    ctx.restore();
+}
+
+Renderer.canvas.addEventListener('contextmenu', (ev) => { if (Eraser.on) ev.preventDefault(); });
+
+Renderer.canvas.addEventListener('mousedown', (ev) => {
+
+    if (!Eraser.on) return;
+
+    // tasto centrale: sposta la vista (lo fa il codice del pan)
+    if (ev.button === 1) { ev.preventDefault(); return; }
+
+    ev.preventDefault();
+
+    // il clic sul disegno non sposta il cursore da un eventuale campo di testo: lo togliamo noi,
+    // altrimenti Ctrl+Z resterebbe "bloccato" dentro la casella della misura
+    const ae = document.activeElement;
+
+    if (ae && ae !== document.body && ae.tagName === 'INPUT' && ae.type !== 'range' && ae.type !== 'checkbox') ae.blur();
+
+    if (eraserRunning()) {
+
+        eraserState.note = '⏸ Metti in pausa per cancellare.';
+
+        eraserRefresh();
+
+        return;
+    }
+
+    eraserState.note = '';
+
+    const pieces = eraserPieces();
+
+    if (!pieces) return;
+
+    const w = eraserWorld(ev);
+
+    const restore = ev.button === 2 || ev.altKey;
+
+    eraserState.drawing = { restore, last: w };
+    eraserState.pointer = w;
+
+    Eraser.beginStroke();
+
+    Eraser.paint(pieces, w.x, w.y, restore);
+
+    renderCurrentFrame();
+});
+
+window.addEventListener('mousemove', (ev) => {
+
+    if (!Eraser.on) return;
+
+    const over = ev.target === Renderer.canvas;
+
+    if (!over && !eraserState.drawing) return;
+
+    const w = eraserWorld(ev);
+
+    const d = eraserState.drawing;
+
+    if (d) {
+
+        const pieces = eraserPieces();
+
+        if (pieces) Eraser.stroke(pieces, d.last.x, d.last.y, w.x, w.y, d.restore);
+
+        d.last = w;
+    }
+
+    eraserState.pointer = over ? w : null;
+
+    if (!eraserRunning()) renderCurrentFrame();
+});
+
+Renderer.canvas.addEventListener('mouseleave', () => {
+
+    if (!Eraser.on || eraserState.drawing) return;
+
+    eraserState.pointer = null;
+
+    if (!eraserRunning()) renderCurrentFrame();
+});
+
+window.addEventListener('mouseup', () => {
+
+    if (!eraserState.drawing) return;
+
+    eraserState.drawing = null;
+
+    // chiude il tratto: da qui in poi si puo' annullare tutto il tratto in un colpo solo
+    Eraser.endStroke();
+
+    eraserRefresh();
+});
+
+window.addEventListener('keydown', (ev) => {
+
+    if (!Eraser.on) return;
+
+    const t = document.activeElement;
+
+    if (t && ((t.tagName === 'INPUT' && ['text', 'number'].includes(t.type)) || t.tagName === 'TEXTAREA')) return;
+
+    // niente scorciatoie se e' aperta un'altra finestra (editor, anteprima, controlli)
+    for (const id of ['asmOverlay', 'fvOverlay', 'siteOverlay']) {
+
+        const el = document.getElementById(id);
+
+        if (el && el.style.display !== 'none') return;
+    }
+
+    const k = ev.key.toLowerCase();
+    const ctrl = ev.ctrlKey || ev.metaKey;
+
+    if (ctrl && k === 'z' && !ev.shiftKey) { Eraser.undo(); ev.preventDefault(); }
+    else if (ctrl && (k === 'y' || (k === 'z' && ev.shiftKey))) { Eraser.redo(); ev.preventDefault(); }
+    else if (!ctrl && k === '[') { eraserSetSize(Eraser.size - (ev.shiftKey ? 5 : 1)); }
+    else if (!ctrl && k === ']') { eraserSetSize(Eraser.size + (ev.shiftKey ? 5 : 1)); }
+});
+
+// cambiando fotogramma / animazione / pausa si aggiorna il riquadro con i dati.
+// Lo fa renderCurrentFrame (dopo che lo stato e' cambiato davvero): con un listener
+// sul pulsante o sulla timeline si leggerebbe ancora il fotogramma precedente.
+let eraserSyncKey = '';
+
+function eraserSync() {
+
+    if (!Eraser.on) { eraserSyncKey = ''; return; }
+
+    const key = `${state.current}|${state.frameIndex}|${state.isPaused ? 1 : 0}|${state.isPlaying ? 1 : 0}`;
+
+    if (key === eraserSyncKey) return;
+
+    eraserSyncKey = key;
+
+    eraserRefresh();
+}
+
+eraserRefresh();
 
 
 // ============================================================
@@ -843,6 +1274,11 @@ async function loadSamFiles(files) {
 
         if (unit.warnings.length) notes.push(`⚠ ${unit.warnings.length} frame del .sam non decodificati (es. ${unit.warnings[0]})`);
 
+        // la gomma ritrova le cancellazioni gia' fatte su questa unita'
+        Eraser.attach(Renderer.image, state.framesDBOrig, state.framesDB);
+
+        eraserRefresh();
+
         multiInfo.innerText = [
             `✔ SAM: ${samFile.name}`,
             `✔ ${unit.spriteCount - unit.missing.length} / ${unit.spriteCount} frammenti PNG`,
@@ -968,6 +1404,10 @@ function renderCurrentFrame() {
 
 
     drawAreaOverlay();
+
+    drawEraserCursor();
+
+    eraserSync();
 
 
     // Timeline
@@ -1668,6 +2108,11 @@ btnStart.onclick = async () => {
 
 
         rebuildAll();
+
+        // la gomma ritrova le cancellazioni gia' fatte su questa unita'
+        Eraser.attach(Renderer.image, state.framesDBOrig, state.framesDB);
+
+        eraserRefresh();
 
         beginPlayback();
 
@@ -3763,7 +4208,7 @@ btnVideo.onclick = () => runExport(btnVideo, async (o) => {
 
     for (let k = 0; k < delays.length; k++) {
 
-        const sig = JSON.stringify(framePieces(plan, k));
+        const sig = Eraser.sig(framePieces(plan, k));
 
         if (sig === lastSig) continue;
 
@@ -4212,7 +4657,7 @@ async function openFrameView() {
 
         const pieces = framePieces(plan, k);
 
-        const sig = JSON.stringify(pieces);
+        const sig = Eraser.sig(pieces);
 
         if (sig !== lastSig) {
 
@@ -4587,7 +5032,7 @@ async function measureTightBox(fps, onProgress, { only = null, smooth = document
 
             const pieces = framePieces(plan, k);
 
-            const sig = JSON.stringify(pieces);
+            const sig = Eraser.sig(pieces);
 
             if (seen.has(sig)) continue;
 
@@ -4689,7 +5134,7 @@ function webpKeyFrames(plan) {
 
         const pieces = framePieces(plan, k);
 
-        const s = JSON.stringify(pieces);
+        const s = Eraser.sig(pieces);
 
         if (list.length && s === sig) {
 
@@ -5023,7 +5468,7 @@ function siteKeyFrames(sequence) {
 
         const pieces = composeFrame({ sequence, framesDB: state.framesDB, shifts, index: i, t: 0, smooth: false }) || [];
 
-        const sig = JSON.stringify(pieces);
+        const sig = Eraser.sig(pieces);
 
         const last = list[list.length - 1];
 

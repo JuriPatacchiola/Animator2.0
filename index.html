@@ -78,6 +78,54 @@
                     <input type="range" id="timeline" min="0" max="0" value="0">
                 </div>
 
+                <div id="eraserBox"
+                    style="display:flex;flex-direction:column;gap:6px;font-size:13px;color:#9ca3af;border:1px solid #3b4252;border-radius:8px;padding:8px">
+                    <button id="eraserToggle" class="secondary-btn" style="width:100%;padding:10px;font-size:13px"
+                        title="Cancella i pixel che non vuoi, con un pennello, direttamente sull'animazione. L'animazione si ferma sul fotogramma mostrato (con ⬅️ ➡️ cambi fotogramma). Tasto sinistro = cancella · Alt+clic o tasto destro = ripristina · rotella = zoom · tasto centrale trascinato = sposta la vista · Ctrl+Z / Ctrl+Y = annulla / ripeti · [ e ] = pennello più piccolo / grande. Le cancellazioni valgono in anteprima e in TUTTE le esportazioni; i file originali non vengono toccati.">
+                        🧽 Gomma: spenta
+                    </button>
+                    <div id="eraserOpts" style="display:none;flex-direction:column;gap:6px">
+                        <span style="display:flex;align-items:center;gap:8px;flex-wrap:nowrap"
+                            title="Diametro del pennello in pixel dello sprite. 1 = un solo pixel. Per essere precisi ingrandisci con la rotella: a zoom 100% un pixel dello sprite è un pixel dello schermo.">
+                            <span style="white-space:nowrap">Pennello</span>
+                            <input type="range" id="eraserSize" min="1" max="40" step="1" value="6"
+                                style="flex:1;min-width:60px;margin:0">
+                            <input type="number" id="eraserSizeNum" min="1" max="40" step="1" value="6"
+                                style="flex:none;width:52px;padding:4px;background:#2a2f3a;color:#fff;border:1px solid #4b5563;border-radius:4px">
+                            <span>px</span>
+                        </span>
+                        <label
+                            title="«Solo questo fotogramma»: la cancellazione riguarda solo il fotogramma che vedi (gli altri restano com'erano). «Tutto il foglio»: il pixel sparisce da TUTTI i fotogrammi che lo usano (utile per pixel di troppo che compaiono in tutta l'animazione).">
+                            Vale per
+                            <select id="eraserScope"
+                                style="width:100%;padding:6px;background:#2a2f3a;color:#fff;border:1px solid #4b5563;border-radius:4px;margin-top:4px">
+                                <option value="frame" selected>Solo questo fotogramma</option>
+                                <option value="sheet">Tutto il foglio (tutti i fotogrammi)</option>
+                            </select>
+                        </label>
+                        <label
+                            title="Acceso: il pennello cancella solo il pezzo che si vede in cima in quel punto, quelli sotto restano (non si fanno buchi). Spento: cancella tutto quello che c'è sotto il pennello, fino allo sfondo.">
+                            <input type="checkbox" id="eraserTop"> Solo il pezzo in cima (niente buchi sotto)
+                        </label>
+                        <div style="display:flex;gap:6px;flex-wrap:wrap">
+                            <button id="eraserUndo" class="secondary-btn" style="flex:1" title="Annulla (Ctrl+Z)">↶
+                                Annulla</button>
+                            <button id="eraserRedo" class="secondary-btn" style="flex:1"
+                                title="Ripeti (Ctrl+Y o Ctrl+Maiusc+Z)">↷ Ripeti</button>
+                        </div>
+                        <div style="display:flex;gap:6px;flex-wrap:wrap">
+                            <button id="eraserClearFrame" class="secondary-btn" style="flex:1"
+                                title="Toglie le cancellazioni fatte solo su questo fotogramma (si può annullare)">Ripristina
+                                fotogramma</button>
+                            <button id="eraserClearAll" class="secondary-btn" style="flex:1"
+                                title="Toglie TUTTE le cancellazioni di questa unità (si può annullare)">Ripristina
+                                tutto</button>
+                        </div>
+                    </div>
+                    <span id="eraserInfo"
+                        style="font-size:11px;line-height:1.4;color:#9ca3af;white-space:pre-line"></span>
+                </div>
+
                 <div class="select-wrapper">
                     <label for="select">Azione Corrente:</label>
                     <select id="select">

@@ -1,3 +1,5 @@
+import { Eraser } from './eraser.js';
+
 export const Renderer = {
 
     canvas: null,
@@ -335,10 +337,13 @@ export const Renderer = {
                     ctx.imageSmoothingEnabled = true;
                 }
 
+                // pixel cancellati con la gomma: si disegna il ritaglio senza quei pixel
+                const cropS = Eraser.cropFor(this.image, piece);
+
                 ctx.drawImage(
-                    this.image,
-                    piece.sx,
-                    piece.sy,
+                    cropS || this.image,
+                    cropS ? 0 : piece.sx,
+                    cropS ? 0 : piece.sy,
                     piece.w,
                     piece.h,
                     piece.ox || 0,
@@ -425,13 +430,16 @@ export const Renderer = {
             // DRAW IMAGE
             // =================================================
 
+            // pixel cancellati con la gomma: si disegna il ritaglio senza quei pixel
+            const crop = Eraser.cropFor(this.image, piece);
+
             ctx.drawImage(
 
-                this.image,
+                crop || this.image,
 
                 // SORGENTE SPRITESHEET
-                piece.sx,
-                piece.sy,
+                crop ? 0 : piece.sx,
+                crop ? 0 : piece.sy,
                 piece.w,
                 piece.h,
 
