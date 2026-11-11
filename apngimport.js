@@ -202,12 +202,35 @@ function trimFrame(img, W, H) {
     return { bx: x0, by: y0, bw, bh, data: out };
 }
 
+// toglie dal fotogramma i rettangoli indicati (misurati dall'angolo in basso a sinistra del fotogramma intero)
+function clearRects(img, W, H, cuts) {
+
+    if (!cuts || !cuts.length) return;
+
+    const d = img.data;
+
+    for (const c of cuts) {
+
+        const x0 = Math.max(0, Math.floor(c.l)), x1 = Math.min(W, Math.ceil(c.l + c.w));
+        const y0 = Math.max(0, Math.floor(H - c.b - c.h)), y1 = Math.min(H, Math.ceil(H - c.b));
+
+        for (let y = y0; y < y1; y++) {
+
+            const row = y * W * 4;
+
+            for (let x = x0; x < x1; x++) d.fill(0, row + x * 4, row + x * 4 + 4);
+        }
+    }
+}
+
 /*
     Legge un PNG animato (o un PNG normale: un solo fotogramma).
+    "cuts": rettangoli da togliere da ogni fotogramma (per esempio il logo): [{ l, b, w, h }] misurati
+    dall'angolo in basso a sinistra del fotogramma intero (l = da sinistra, b = dal basso).
     Ritorna { width, height, animated, frames: [{ bx, by, bw, bh, data | null, delay }] }
     dove "delay" e' in millisecondi e "data" sono i pixel RGBA del ritaglio (null = fotogramma vuoto).
 */
-export async function decodeApng(buffer, onProgress) {
+export async function decodeApng(buffer, onProgress, cuts = []) {
 
     const bytes = new Uint8Array(buffer);
 
@@ -250,7 +273,11 @@ export async function decodeApng(buffer, onProgress) {
 
         if (bmp.close) bmp.close();
 
-        const t = trimFrame(ctx.getImageData(0, 0, W, H), W, H);
+        const img0 = ctx.getImageData(0, 0, W, H);
+
+        clearRects(img0, W, H, cuts);
+
+        const t = trimFrame(img0, W, H);
 
         frames.push(t ? { ...t, delay: 100 } : { bx: 0, by: 0, bw: 0, bh: 0, data: null, delay: 100 });
 
@@ -334,7 +361,12 @@ export async function decodeApng(buffer, onProgress) {
 
         if (bmp.close) bmp.close();
 
-        const t = trimFrame(ctx.getImageData(0, 0, W, H), W, H);
+        // il fotogramma come lo si vede (senza i rettangoli tolti); la tela sotto resta intera per i fotogrammi dopo
+        const shown = ctx.getImageData(0, 0, W, H);
+
+        clearRects(shown, W, H, cuts);
+
+        const t = trimFrame(shown, W, H);
 
         const ms = (f.dn / (f.dd || 100)) * 1000;
 
@@ -388,9 +420,10 @@ function sameBytes(a, b) {
 
     Ogni disegno diverso e' un ritaglio del foglio. I fotogrammi tutti uguali condividono la stessa riga
     (e lo stesso ritaglio). Il punto 0,0 dell'animatore e' il centro in basso del fotogramma: le animazioni
-    della stessa unita' stanno cosi' una sull'altra anche se hanno misure diverse.
+    della stessa unita' stanno cosi' una sull'altra anche se hanno misure diverse. "feet" sposta quel punto
+    (di dx, dy dal centro in basso) sui piedi del personaggio.
 */
-export function buildApngUnit(anims, tickMs = 1000 / 60) {
+export function buildApngUnit(anims, tickMs = 1000 / 60, feet = { dx: 0, dy: 0 }) {
 
     const cells = [];
     const byHash = new Map();
@@ -399,6 +432,7 @@ export function buildApngUnit(anims, tickMs = 1000 / 60) {
     const rowIndex = new Map();
     const sequences = {};
     const sizes = {};
+    const anchors = {};
     const order = [];
 
     const cellFor = (f) => {
@@ -421,7 +455,10 @@ export function buildApngUnit(anims, tickMs = 1000 / 60) {
 
     for (const { name, dec } of anims) {
 
-        const ax = Math.round(dec.width / 2), ay = dec.height;
+        // punto dei piedi del personaggio nel fotogramma, misurato dal centro in basso (dx, dy): diventa lo 0,0 dell'animatore
+        const ax = Math.round(dec.width / 2 + (Number(feet && feet.dx) || 0)), ay = Math.round(dec.height + (Number(feet && feet.dy) || 0));
+
+        anchors[name] = { x: ax, y: ay };
 
         sizes[name] = { w: dec.width, h: dec.height, animated: dec.animated, frames: dec.frames.length };
 
@@ -511,7 +548,7 @@ export function buildApngUnit(anims, tickMs = 1000 / 60) {
         }
     }
 
-    return { atlas, framesDB, sequences, order, sizes, cellCount: cells.length };
+    return { atlas, framesDB, sequences, order, sizes, anchors, cellCount: cells.length };
 }
 
 

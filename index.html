@@ -66,6 +66,36 @@
                 <div id="apngInfo"
                     style="font-size:11px;line-height:1.5;color:#9ca3af;white-space:pre-line;margin:8px 0;word-break:break-word">
                 </div>
+                <div style="display:flex;gap:4px;margin-bottom:6px">
+                    <button id="apngFeet" class="secondary-btn" style="flex:1;padding:8px 4px;font-size:12px" disabled
+                        title="Clicca sull'anteprima dove poggiano i piedi del personaggio (il centro dell'ombra): quel punto diventa la croce gialla, come per le altre unità. Si ricorda per le prossime importazioni.">📍
+                        Segna i piedi</button>
+                    <button id="apngCut" class="secondary-btn" style="flex:1;padding:8px 4px;font-size:12px" disabled
+                        title="Disegna un rettangolo sopra il logo o la scritta: viene tolto da tutti i fotogrammi di tutte le animazioni e si ricorda per le prossime importazioni. Si può ripetere per più rettangoli.">✂
+                        Togli il logo</button>
+                    <button id="apngReset" class="secondary-btn" style="flex:none;padding:8px 10px;font-size:12px"
+                        disabled
+                        title="Rimette posizione e logo come nel file (dimentica anche quelli ricordati)">↺</button>
+                </div>
+                <div style="display:flex;align-items:center;gap:4px;margin-bottom:8px;font-size:11px;color:#9ca3af">
+                    <span title="Sposta tutta l'animazione che stai guardando (le altre restano ferme)">Sposta:</span>
+                    <button class="secondary-btn" data-apng-nudge="-1,0" style="flex:none;padding:4px 8px"
+                        disabled>⬅</button>
+                    <button class="secondary-btn" data-apng-nudge="1,0" style="flex:none;padding:4px 8px"
+                        disabled>➡</button>
+                    <button class="secondary-btn" data-apng-nudge="0,-1" style="flex:none;padding:4px 8px"
+                        disabled>⬆</button>
+                    <button class="secondary-btn" data-apng-nudge="0,1" style="flex:none;padding:4px 8px"
+                        disabled>⬇</button>
+                    <select id="apngStep" disabled
+                        style="flex:1;min-width:0;background:#2a2f3a;color:#e5e7eb;border:1px solid #4b5563;border-radius:4px;padding:4px">
+                        <option value="1">1 px</option>
+                        <option value="2">2 px</option>
+                        <option value="5">5 px</option>
+                        <option value="10" selected>10 px</option>
+                        <option value="20">20 px</option>
+                    </select>
+                </div>
                 <button id="apngSave" class="secondary-btn" style="width:100%" disabled
                     title="Trasforma l'unità che vedi in file veri: image.png + CGG + CGS (in un ZIP), con le cancellazioni della gomma già applicate. Poi li carichi quando vuoi con «Carica TUTTI i file insieme».">
                     💾 Salva come unità (PNG + CGG + CGS)</button>

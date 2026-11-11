@@ -131,6 +131,10 @@ const state = {
 };
 
 
+// strumenti dell'importazione APNG sull'anteprima: 'feet' (un clic sui piedi) / 'cut' (rettangolo da togliere)
+const apngPick = { mode: null, drag: null, pointer: null };
+
+
 // ============================================================
 // INIT RENDERER
 // ============================================================
@@ -490,12 +494,13 @@ Renderer.canvas.addEventListener(
     'mousedown',
     (event) => {
 
-        // con la gomma accesa il tasto sinistro / destro cancella: la vista si sposta col tasto centrale
-        if (Eraser.on && event.button !== 1) {
+        // con la gomma accesa (o con "Segna i piedi" / "Togli il logo") il tasto sinistro / destro e' dello strumento:
+        // la vista si sposta col tasto centrale
+        if ((Eraser.on || apngPick.mode) && event.button !== 1) {
             return;
         }
 
-        if (Eraser.on) event.preventDefault();
+        if (Eraser.on || apngPick.mode) event.preventDefault();
 
         isDragging = true;
     }
@@ -1351,10 +1356,46 @@ const apngEls = {
     fetch: document.getElementById('apngFetch'),
     proxy: document.getElementById('apngProxy'),
     info: document.getElementById('apngInfo'),
-    save: document.getElementById('apngSave')
+    save: document.getElementById('apngSave'),
+    feet: document.getElementById('apngFeet'),
+    cut: document.getElementById('apngCut'),
+    reset: document.getElementById('apngReset'),
+    step: document.getElementById('apngStep'),
+    nudge: [...document.querySelectorAll('[data-apng-nudge]')]
 };
 
 const APNG_PREF_KEY = 'animator.apng';
+
+// posizione e logo: valgono per tutte le unita' importate (i fotogrammi della libreria sono fatti tutti uguali)
+//   feet = punto dei piedi, misurato dal centro in basso del fotogramma {dx, dy}
+//   cuts = rettangoli da togliere (logo, scritta), misurati dall'angolo in basso a sinistra {l, b, w, h}
+const APNG_POS_KEY = 'animator.apngPos';
+
+const apngPos = { feet: null, cuts: [] };
+
+try {
+
+    const v = JSON.parse(localStorage.getItem(APNG_POS_KEY) || 'null');
+
+    if (v) {
+
+        if (v.feet && Number.isFinite(v.feet.dx) && Number.isFinite(v.feet.dy)) apngPos.feet = { dx: v.feet.dx, dy: v.feet.dy };
+
+        if (Array.isArray(v.cuts)) apngPos.cuts = v.cuts.filter(c => c && [c.l, c.b, c.w, c.h].every(Number.isFinite) && c.w > 0 && c.h > 0).slice(0, 12);
+    }
+
+} catch (e) { /* ignoro */ }
+
+function apngSavePos() {
+
+    try { localStorage.setItem(APNG_POS_KEY, JSON.stringify(apngPos)); } catch (e) { /* ignoro */ }
+}
+
+// spostamento fatto a mano su ogni animazione (si vede e si salva con l'unita')
+state.apngNudge = {};
+state.apngFiles = [];
+state.apngAnchors = {};
+state.apngSizes = {};
 
 try {
 
@@ -1386,6 +1427,11 @@ function apngSay(text) {
 function apngRefresh() {
 
     apngEls.save.disabled = state.samMode || !state.framesDBOrig.length || !Renderer.image;
+
+    // posizione e logo servono solo alle unita' importate da APNG
+    for (const el of [apngEls.feet, apngEls.cut, apngEls.reset, apngEls.step, ...apngEls.nudge]) el.disabled = !state.imported;
+
+    if (!state.imported && apngPick.mode) apngDisarm();
 }
 
 // quali file di un gruppo sono APNG (o PNG con il nome di un'animazione, senza CGG / CGS / .sam)
@@ -1409,7 +1455,7 @@ async function apngCandidates(files) {
     return out;
 }
 
-async function loadApngFiles(files, extraNotes = []) {
+async function loadApngFiles(files, extraNotes = [], opts = {}) {
 
     const notes = [...extraNotes];
 
@@ -1448,12 +1494,22 @@ async function loadApngFiles(files, extraNotes = []) {
 
             apngSay(`Lettura di ${name}…`);
 
-            const dec = await decodeApng(await found[a].arrayBuffer(), (n, m) => apngSay(`Lettura di ${name}: fotogramma ${n} / ${m}`));
+            const dec = await decodeApng(await found[a].arrayBuffer(), (n, m) => apngSay(`Lettura di ${name}: fotogramma ${n} / ${m}`), apngPos.cuts);
 
             anims.push({ name: a, dec });
         }
 
-        const unit = buildApngUnit(anims, TICK_MS);
+        const unit = buildApngUnit(anims, TICK_MS, apngPos.feet || { dx: 0, dy: 0 });
+
+        // per rifare l'importazione (piedi, logo) senza chiedere di nuovo i file
+        state.apngFiles = Object.values(found);
+        state.apngAnchors = unit.anchors;
+        state.apngSizes = unit.sizes;
+
+        if (!opts.keep) state.apngNudge = {};
+
+        // per riprendere dal punto in cui eri
+        const resume = opts.keep ? { current: state.current, frameIndex: state.frameIndex, paused: state.isPaused } : null;
 
         // ---- l'unita' entra nell'animatore come un'unita' CGG
         Renderer.image = unit.atlas;
@@ -1484,6 +1540,11 @@ async function loadApngFiles(files, extraNotes = []) {
             const seq = state.sequences[name];
 
             while (seq.length > 1 && !(state.framesDBOrig[seq[seq.length - 1].id] || []).some(p => p && p.w > 0 && p.h > 0)) seq.pop();
+
+            // spostamento fatto a mano con le frecce
+            const nd = state.apngNudge[name];
+
+            if (nd) for (const f of seq) { f.xOffset = nd.x; f.yOffset = nd.y; }
         }
 
         rebuildAll();
@@ -1521,6 +1582,8 @@ async function loadApngFiles(files, extraNotes = []) {
                 return `${label[k]}: ${z.frames} fotogramm${z.frames === 1 ? 'o' : 'i'} · ${z.w}×${z.h} · ${(ms / 1000).toFixed(2).replace('.', ',')} s${z.animated ? '' : ' (PNG fermo)'}`;
             }),
             `${unit.cellCount} disegni diversi sul foglio`,
+            apngPos.feet ? '📍 Piedi: posizione ricordata' : '📍 Il personaggio non sta sulla croce gialla? «Segna i piedi» e clicca dove poggiano.',
+            apngPos.cuts.length ? `✂ Logo / scritte tolte: ${apngPos.cuts.length}` : '✂ C\'è un logo o una scritta? «Togli il logo» e disegna un rettangolo sopra.',
             ...notes
         ];
 
@@ -1530,7 +1593,29 @@ async function loadApngFiles(files, extraNotes = []) {
 
         state.downloadCount = 1;
 
-        beginPlayback();
+        if (resume) {
+
+            // stessa animazione, stesso fotogramma, stessa pausa di prima
+            if (state.sequences[resume.current] && state.sequences[resume.current].length) state.current = resume.current;
+
+            selectAnim.value = state.current;
+
+            beginPlayback();
+
+            const len = (state.sequences[state.current] || []).length;
+
+            state.frameIndex = Math.min(resume.frameIndex, Math.max(0, len - 1));
+            state.isPaused = resume.paused;
+
+            btnPause.innerText = resume.paused ? '▶ RIPRENDI' : '⏸ PAUSA';
+
+            updateTimelineUI();
+            renderCurrentFrame();
+
+        } else {
+
+            beginPlayback();
+        }
 
     } catch (error) {
 
@@ -1762,6 +1847,270 @@ async function saveUnitFiles() {
 
 apngEls.save.addEventListener('click', saveUnitFiles);
 
+// ------------------------------------------------------------
+// POSIZIONE E LOGO
+//
+// "Segna i piedi": un clic sull'anteprima dove poggiano i piedi (centro dell'ombra). Quel punto diventa
+// lo 0,0 (la croce gialla), come per le altre unita'. Si ricorda: le prossime unita' importate
+// escono gia' a posto.
+// "Togli il logo": si disegna un rettangolo sopra il logo / la scritta. Viene tolto da TUTTI i
+// fotogrammi di tutte le animazioni (misurato dall'angolo in basso a sinistra del fotogramma) e si ricorda.
+// ------------------------------------------------------------
+
+// quale animazione sto guardando (con "Completa" quella del fotogramma mostrato)
+function apngCurrentAnim() {
+
+    if (['idle', 'atk', 'move'].includes(state.current)) return state.current;
+
+    const entry = (state.sequences[state.current] || [])[state.frameIndex];
+
+    return ['idle', 'atk', 'move'].find(n => (state.sequences[n] || []).includes(entry)) || null;
+}
+
+// punto del mondo (animatore) -> punto del fotogramma originale di quell'animazione
+function apngToFrame(name, w) {
+
+    const a = state.apngAnchors[name], nd = state.apngNudge[name] || { x: 0, y: 0 };
+
+    return { x: w.x - nd.x + a.x, y: w.y - nd.y + a.y };
+}
+
+function apngArm(mode) {
+
+    if (!state.imported) return;
+
+    if (Eraser.on) eraserUI.toggle.click();
+
+    if (!apngCurrentAnim()) { apngSay('Scegli prima Idle, Attack o Move nel menu «Azione Corrente».'); return; }
+
+    apngPick.mode = apngPick.mode === mode ? null : mode;
+    apngPick.drag = null;
+    apngPick.pointer = null;
+
+    // fermo l'animazione: si sceglie il punto su un fotogramma che non si muove
+    if (apngPick.mode && state.isPlaying && !state.isPaused) {
+
+        state.isPaused = true;
+
+        btnPause.innerText = '▶ RIPRENDI';
+    }
+
+    apngEls.feet.style.background = apngPick.mode === 'feet' ? '#0f766e' : '';
+    apngEls.cut.style.background = apngPick.mode === 'cut' ? '#be123c' : '';
+
+    Renderer.canvas.style.cursor = apngPick.mode ? 'crosshair' : '';
+
+    if (apngPick.mode === 'feet') apngSay('📍 Clicca sull\'anteprima dove poggiano i piedi (il centro dell\'ombra). Esc per annullare.\nConsiglio: ingrandisci con la rotella e usa un fotogramma fermo (pausa).');
+    else if (apngPick.mode === 'cut') apngSay('✂ Trascina un rettangolo sopra il logo o la scritta. Verrà tolto da tutti i fotogrammi. Esc per annullare.');
+
+    renderCurrentFrame();
+}
+
+function apngDisarm() {
+
+    apngPick.mode = null;
+    apngPick.drag = null;
+    apngPick.pointer = null;
+
+    apngEls.feet.style.background = '';
+    apngEls.cut.style.background = '';
+
+    Renderer.canvas.style.cursor = Eraser.on ? 'crosshair' : '';
+
+    renderCurrentFrame();
+}
+
+function drawApngPick() {
+
+    if (!apngPick.mode || !Renderer.ctx) return;
+
+    const ctx = Renderer.ctx;
+    const k = Renderer.scale * Renderer.dpr;
+
+    ctx.save();
+
+    ctx.translate(Renderer.canvas.width / 2 + Renderer.offsetX * Renderer.dpr, Renderer.canvas.height / 2 + Renderer.offsetY * Renderer.dpr);
+    ctx.scale(k, k);
+
+    ctx.lineWidth = 2 / k;
+
+    if (apngPick.mode === 'feet' && apngPick.pointer) {
+
+        const p = apngPick.pointer;
+
+        ctx.strokeStyle = '#34d399';
+
+        ctx.beginPath();
+        ctx.moveTo(p.x - 14 / k, p.y); ctx.lineTo(p.x + 14 / k, p.y);
+        ctx.moveTo(p.x, p.y - 14 / k); ctx.lineTo(p.x, p.y + 14 / k);
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 5 / k, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+
+    if (apngPick.mode === 'cut' && apngPick.drag) {
+
+        const d = apngPick.drag;
+
+        const x = Math.min(d.x0, d.x1), y = Math.min(d.y0, d.y1), w = Math.abs(d.x1 - d.x0), h = Math.abs(d.y1 - d.y0);
+
+        ctx.fillStyle = 'rgba(239, 68, 68, 0.25)';
+        ctx.fillRect(x, y, w, h);
+
+        ctx.setLineDash([6 / k, 4 / k]);
+        ctx.strokeStyle = '#ef4444';
+        ctx.strokeRect(x, y, w, h);
+    }
+
+    ctx.restore();
+}
+
+async function apngReimport(notes = []) {
+
+    if (!state.apngFiles.length) return;
+
+    await loadApngFiles(state.apngFiles, notes, { keep: true });
+}
+
+Renderer.canvas.addEventListener('mousedown', (ev) => {
+
+    if (!apngPick.mode || ev.button !== 0) return;
+
+    ev.preventDefault();
+
+    const w = eraserWorld(ev);
+
+    if (apngPick.mode === 'cut') {
+
+        apngPick.drag = { x0: w.x, y0: w.y, x1: w.x, y1: w.y };
+
+        renderCurrentFrame();
+
+        return;
+    }
+
+    // ---- piedi
+    const name = apngCurrentAnim();
+
+    if (!name || !state.apngAnchors[name]) return;
+
+    const z = state.apngSizes[name];
+
+    const c = apngToFrame(name, w);
+
+    apngPos.feet = { dx: Math.round(c.x - z.w / 2), dy: Math.round(c.y - z.h) };
+
+    apngSavePos();
+
+    state.apngNudge = {};
+
+    apngDisarm();
+
+    apngReimport(['📍 Piedi segnati: ora il personaggio sta sulla croce gialla. Si ricorda per le prossime unità.']);
+});
+
+window.addEventListener('mousemove', (ev) => {
+
+    if (!apngPick.mode) return;
+
+    const over = ev.target === Renderer.canvas;
+
+    if (!over && !apngPick.drag) { if (apngPick.pointer) { apngPick.pointer = null; renderCurrentFrame(); } return; }
+
+    const w = eraserWorld(ev);
+
+    apngPick.pointer = over ? w : null;
+
+    if (apngPick.drag) { apngPick.drag.x1 = w.x; apngPick.drag.y1 = w.y; }
+
+    if (!eraserRunning() || apngPick.drag) renderCurrentFrame();
+});
+
+window.addEventListener('mouseup', (ev) => {
+
+    if (apngPick.mode !== 'cut' || !apngPick.drag) return;
+
+    const d = apngPick.drag;
+
+    apngPick.drag = null;
+
+    const name = apngCurrentAnim();
+
+    if (!name || !state.apngAnchors[name] || Math.abs(d.x1 - d.x0) < 2 || Math.abs(d.y1 - d.y0) < 2) { renderCurrentFrame(); return; }
+
+    const z = state.apngSizes[name];
+
+    const a = apngToFrame(name, { x: Math.min(d.x0, d.x1), y: Math.min(d.y0, d.y1) });
+    const b = apngToFrame(name, { x: Math.max(d.x0, d.x1), y: Math.max(d.y0, d.y1) });
+
+    const left = Math.max(0, Math.floor(a.x)), right = Math.min(z.w, Math.ceil(b.x));
+    const top = Math.max(0, Math.floor(a.y)), bottom = Math.min(z.h, Math.ceil(b.y));
+
+    if (right - left < 1 || bottom - top < 1) { apngSay('⚠ Il rettangolo è fuori dal fotogramma: ridisegnalo sopra il logo.'); apngDisarm(); return; }
+
+    apngPos.cuts.push({ l: left, b: z.h - bottom, w: right - left, h: bottom - top });
+
+    apngPos.cuts = apngPos.cuts.slice(-12);
+
+    apngSavePos();
+
+    apngDisarm();
+
+    apngReimport(['✂ Tolto il rettangolo da tutti i fotogrammi (si ricorda per le prossime unità). Le cancellazioni fatte prima con la gomma non si vedono più su questo foglio: meglio togliere il logo per primo.']);
+});
+
+window.addEventListener('keydown', (ev) => {
+
+    if (ev.key === 'Escape' && apngPick.mode) { apngDisarm(); apngSay('Annullato.'); }
+});
+
+apngEls.feet.addEventListener('click', () => apngArm('feet'));
+apngEls.cut.addEventListener('click', () => apngArm('cut'));
+
+apngEls.reset.addEventListener('click', () => {
+
+    apngPos.feet = null;
+    apngPos.cuts = [];
+
+    apngSavePos();
+
+    state.apngNudge = {};
+
+    apngDisarm();
+
+    apngReimport(['↺ Posizione e logo come nel file.']);
+});
+
+// frecce: spostano tutta l'animazione che stai guardando (idle, atk o move)
+for (const btn of apngEls.nudge) {
+
+    btn.addEventListener('click', () => {
+
+        const name = apngCurrentAnim();
+
+        if (!name) { apngSay('Scegli prima Idle, Attack o Move nel menu «Azione Corrente».'); return; }
+
+        const step = Number(apngEls.step.value) || 1;
+
+        const [dx, dy] = btn.dataset.apngNudge.split(',').map(Number);
+
+        const n = state.apngNudge[name] || (state.apngNudge[name] = { x: 0, y: 0 });
+
+        n.x += dx * step;
+        n.y += dy * step;
+
+        for (const f of state.sequences[name] || []) { f.xOffset = n.x; f.yOffset = n.y; }
+
+        apngSay(`↔ ${name}: spostata di ${n.x}, ${n.y} px (le altre animazioni non cambiano).`);
+
+        updateExportInfo();
+        renderCurrentFrame();
+    });
+}
+
+
 apngRefresh();
 
 
@@ -1857,6 +2206,8 @@ function renderCurrentFrame() {
     drawAreaOverlay();
 
     drawEraserCursor();
+
+    drawApngPick();
 
     eraserSync();
 
