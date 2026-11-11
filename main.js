@@ -1,5 +1,5 @@
 import { createAPNGWriter, createZipWriter } from './apng.js';
-import { animFromName, APNG_LIBRARY, buildApngUnit, clampSplit, decodeApng, expandLinks, fetchApngs, guessDefaultSplit, isApng, proxyLooksWrong, sliceDefault, unitIdFromNames } from './apngimport.js';
+import { animFromName, APNG_LIBRARY, APNG_LOGO_RECT, buildApngUnit, clampSplit, decodeApng, expandLinks, fetchApngs, guessDefaultSplit, isApng, proxyLooksWrong, sliceDefault, unitIdFromNames } from './apngimport.js';
 import { initAssembler } from './assembler.js';
 import { EK, Eraser } from './eraser.js';
 import { createGifWriter, createPaletteBuilder } from './gif.js';
@@ -1403,7 +1403,22 @@ try {
 const apngIsLibrary = (w, h) => w === APNG_LIBRARY.w && h === APNG_LIBRARY.h;
 
 // rettangoli da togliere e punto dei piedi per un fotogramma di w x h
-const apngCutsFor = (w, h) => [...(apngPos.preset && apngIsLibrary(w, h) ? APNG_LIBRARY.cuts : []), ...apngPos.cuts];
+// quanti rettangoli tuoi sul logo sono stati ignorati nell'importazione in corso (il logo ora si toglie lettera per lettera)
+let apngIgnoredCuts = 0;
+
+const apngOverlapsLogo = (c) => c.l < APNG_LOGO_RECT.l + APNG_LOGO_RECT.w && c.l + c.w > APNG_LOGO_RECT.l
+    && c.b < APNG_LOGO_RECT.b + APNG_LOGO_RECT.h && c.b + c.h > APNG_LOGO_RECT.b;
+
+// logoTolto = il logo e' stato tolto lettera per lettera: il rettangolo automatico non serve e i rettangoli tuoi
+// che coprono il logo si ignorano (tagliavano anche la luce degli effetti che passa da li')
+const apngCutsFor = (w, h, logoTolto = false) => {
+
+    const mine = logoTolto ? apngPos.cuts.filter(c => !apngOverlapsLogo(c)) : apngPos.cuts;
+
+    if (logoTolto) apngIgnoredCuts += apngPos.cuts.length - mine.length;
+
+    return [...(apngPos.preset && apngIsLibrary(w, h) && !logoTolto ? APNG_LIBRARY.cuts : []), ...mine];
+};
 
 const apngFeetFor = (w, h) => apngPos.feet || (apngPos.preset && apngIsLibrary(w, h) ? APNG_LIBRARY.feet : { dx: 0, dy: 0 });
 
@@ -1531,6 +1546,8 @@ async function loadApngFiles(files, extraNotes = [], opts = {}) {
 
     const notes = [...extraNotes];
 
+    apngIgnoredCuts = 0;
+
     try {
 
         const found = {};
@@ -1544,7 +1561,7 @@ async function loadApngFiles(files, extraNotes = [], opts = {}) {
 
                 apngSay(`Lettura di ${f.name}…`);
 
-                decCache.set(f, await decodeApng(await f.arrayBuffer(), (n, m) => apngSay(`Lettura di ${f.name}: fotogramma ${n} / ${m}`), apngCutsFor));
+                decCache.set(f, await decodeApng(await f.arrayBuffer(), (n, m) => apngSay(`Lettura di ${f.name}: fotogramma ${n} / ${m}`), apngCutsFor, { logo: apngPos.preset }));
             }
 
             return decCache.get(f);
@@ -1752,9 +1769,11 @@ async function loadApngFiles(files, extraNotes = [], opts = {}) {
                     apngPos.feet ? '📍 Piedi: posizione ricordata'
                         : lib ? '📍 Piedi: messi in automatico sulla croce gialla (fotogrammi 640×400)'
                             : '📍 Il personaggio non sta sulla croce gialla? «Segna i piedi» e clicca dove poggiano.',
-                    (lib || apngPos.cuts.length)
-                        ? `✂ Logo e scritta tolti${lib ? ' in automatico' : ''}${apngPos.cuts.length ? ` (+ ${apngPos.cuts.length} tuoi rettangoli)` : ''}`
-                        : '✂ C\'è un logo o una scritta? «Togli il logo» e disegna un rettangolo sopra.'
+                    anims.some(a => a.dec.logo)
+                        ? `✂ Logo tolto lettera per lettera (la luce degli effetti resta intera)${apngPos.cuts.length - apngIgnoredCuts > 0 ? ` + ${apngPos.cuts.length - apngIgnoredCuts} tuoi rettangoli` : ''}${apngIgnoredCuts ? `\n   Ho ignorato ${apngIgnoredCuts} tuo${apngIgnoredCuts === 1 ? '' : 'i'} rettangol${apngIgnoredCuts === 1 ? 'o' : 'i'} sul logo: tagliava${apngIgnoredCuts === 1 ? '' : 'no'} anche la luce.` : ''}`
+                        : (lib || apngPos.cuts.length)
+                            ? `✂ Logo e scritta tolti${lib ? ' in automatico' : ''}${apngPos.cuts.length ? ` (+ ${apngPos.cuts.length} tuoi rettangoli)` : ''}`
+                            : '✂ C\'è un logo o una scritta? «Togli il logo» e disegna un rettangolo sopra.'
                 ];
             })(),
             ...notes

@@ -215,6 +215,205 @@ function trimFrame(img, W, H) {
 }
 
 // toglie dal fotogramma i rettangoli indicati (misurati dall'angolo in basso a sinistra del fotogramma intero)
+
+/*
+    IL LOGO DELLA LIBRERIA, lettera per lettera.
+    In ogni fotogramma 640x400 c'e' lo stesso logo "BRAVE FRONTIER ©Alim" (stesse lettere, stesso punto: verificato
+    su due unita' diverse). Un rettangolo intero tagliava anche la luce degli effetti che passano da quella zona:
+    qui si toglie solo la forma delle lettere e, dove sotto c'e' un effetto, i buchi si riempiono con i pixel
+    accanto (l'effetto e' fatto di sfumature, quindi si ricostruisce senza che si veda).
+    x, y = angolo in alto a sinistra della zona (dal fotogramma intero), w x h = misure, bits = 1 bit per pixel
+    (1 = lettera), riga dopo riga, in base64.
+*/
+const LOGO = { w0: 640, h0: 400, x: 10, y: 302, w: 151, h: 88, bits: 'AAAAAAAAAHgABgAAAAAAAAAAAAAAAAAAAABwAB4AAAAAAAAAAAAAAAAAAAAA8AB+AAAAAAAAAAAAAAAAAAAAAfAA/AAAAAAAAAAAAAAACAAAAAP4AfgAQAAAAAAAAAAAABwAAAAD+APwB4AAAAAAAAAAAAAeAAAAD/gD3H8AAAAAAAAAAAAAPAAAAB/47//8AAAAAAAAAAAAAHwAAAA/////+AAAAAD4AAAAAAB/AAAAf////+AAAAAD8AAAAAAA/wAAAD////+AAAAAP8AAAAAAAf8AAAA/////H6AeA/+AAAAAAAH/gAAH/////////A/wAAAAAAAD/8AAH/////////A/4AAAAAAAAf/4AD/////////g/4AAAAAAAAH//AH/////////w/8AAAAAAAAD//wD/////////4/4AAAAAAAAD//gD/////////8fgAAAAAAAAA//wH/////////4fAAADAAAAAAP/+D/////////gIAAAPgAAAAAH//H/////////wAAAAfgAAAAAAf///////////8AAAB/gAAAAAAD////////////AAAH/wAAAAAAA////////////g//P/gAABAAAAAP//////////4////AAAAeACAAD//////////9////wAAAP4B4AD///////////////4AAAH/w/AB///////////////8AAAB//v8A///////////////4AAAAH///AP//////////////gAAAAA///4H//////////////AAAAAAH///3/////////////+AAAABIB/////////////////8AAgAH///////////////////////AD///////////////////////wB///////////////////////8A///////////////////////+AP///////////////////////gH///////////////////////wD///////////////////////4B/////////////////////3/4A/////////////////////7/8Af//9//////////////+f///8AP//////////////////P///+AH//////////////////n////gH//////////////////3////4D///////////////////////+B////////////////////////A////////////////////////gf///////////////////////wP///////////////////////wH///////////////////////4AAAAAAAB/////////8AAAAAAAAAAAAAAA/////////+AAAAAAAAAAAAAAA/////////+AAAAAAAAAAAAAAAf///v////+AAAAAAAAAAAAAAAP35/n//vv+AAAAAAAAAAAAAAAHz4/j//nj+AAAAAAAAAAAAAAAAAAAB/4AAAAAAAAAAAAAAAAAAAAAAA/8AAAAAAAAAAAAAAAAAAAAAAAf+AAAAAAAAAAAAAAAAAAAAAAAP/AAAAAAAAAAAAAAAAAAAAAAAH/gAAAAAAAAAAAAAAAAAAAAAAD/wAAAAAAAAAAAAAAAAAAAAAAB/4AAAAAAAAAAAAAAAAAAAAAAA/8AAAAAAAAAAAAAAAAAAAAAAAf+AAAAAAAAAAAAAAAAAAAAAAAP/AAAAAAAAAAAAAAAAAAAAAAAH/gAAAAAAAAAAAAAAAAAAAAAAD/wAAAAAAAAAAAAAAAAAAAAAAB/4AAAAAAAAAAAAAAAAAAAAAAA/8AAAAAAAAAAAAAAAAAAAAAAAf+AAAAAAAAAAAAAAAAAAAAAAAP/AAAAAAAAAAAAIAAAAAAAAAAP/wAAAAAAAAAAA/n7/AAAAAAAH/4AAAAAAAAAAB/7///4AAAAAD/8AAAAAAAAAAA//////AAAAAA/8AAAAAAAAAAA//////gAAAAAf+AAAAAAAAAAAf/////4AAAAAP/AAAAAAAAAAAP/////8AAAAAH/AAAAAAAAAAAH/////+AAAAAB/gAAAAAAAAAAD//////AAAAAA/wAAAAAAAAAAB//////gAAAAAf4AAAAAAAAAAAf/////wAAAAAP8AAAAAAAAAAAP/////4AAAAAD8AAAAAAAAAAAB/+///4AAAAAA8AAAAAAAAAAAAEcP/24AAAAAAMAAAAAAAAAAAA=' };
+
+let logoMaskCache = null;
+
+function logoMask() {
+
+    if (logoMaskCache) return logoMaskCache;
+
+    const raw = atob(LOGO.bits);
+
+    const m = new Uint8Array(LOGO.w * LOGO.h);
+
+    for (let i = 0; i < m.length; i++) m[i] = (raw.charCodeAt(i >> 3) >> (7 - (i & 7))) & 1;
+
+    return (logoMaskCache = m);
+}
+
+// rettangolo del logo come lo misura "cuts": { l, b, w, h } dall'angolo in basso a sinistra
+export const APNG_LOGO_RECT = { l: LOGO.x, b: LOGO.h0 - (LOGO.y + LOGO.h), w: LOGO.w, h: LOGO.h };
+
+// il fotogramma ha davvero il logo? (quasi tutti i pixel delle lettere non sono trasparenti)
+function logoFits(img, W, H) {
+
+    if (W !== LOGO.w0 || H !== LOGO.h0) return false;
+
+    const m = logoMask();
+
+    const d = img.data;
+
+    let on = 0, hit = 0;
+
+    for (let y = 0; y < LOGO.h; y++) {
+
+        for (let x = 0; x < LOGO.w; x++) {
+
+            if (!m[y * LOGO.w + x]) continue;
+
+            on++;
+
+            if (d[((LOGO.y + y) * W + LOGO.x + x) * 4 + 3] > 0) hit++;
+        }
+    }
+
+    return on > 0 && hit / on >= 0.9;
+}
+
+// toglie le lettere del logo; sotto, se c'e' un effetto, lo ricostruisce dai pixel vicini
+function removeLogo(img, W, H) {
+
+    const m = logoMask();
+
+    const d = img.data;
+
+    const MARGIN = 6;
+
+    const rx0 = Math.max(0, LOGO.x - MARGIN), ry0 = Math.max(0, LOGO.y - MARGIN);
+    const rx1 = Math.min(W, LOGO.x + LOGO.w + MARGIN), ry1 = Math.min(H, LOGO.y + LOGO.h + MARGIN);
+
+    const rw = rx1 - rx0, rh = ry1 - ry0;
+
+    // colori premoltiplicati (r*a, g*a, b*a, a) della zona; le lettere partono "sconosciute"
+    const P = new Float32Array(rw * rh * 4);
+    const known = new Uint8Array(rw * rh);
+
+    const unknown = [];
+
+    for (let y = ry0; y < ry1; y++) {
+
+        for (let x = rx0; x < rx1; x++) {
+
+            const k = (y - ry0) * rw + (x - rx0);
+
+            const lx = x - LOGO.x, ly = y - LOGO.y;
+
+            const letter = lx >= 0 && ly >= 0 && lx < LOGO.w && ly < LOGO.h && m[ly * LOGO.w + lx] === 1;
+
+            if (letter) { unknown.push(k); continue; }
+
+            const i = (y * W + x) * 4;
+
+            const a = d[i + 3];
+
+            P[k * 4] = d[i] * a / 255;
+            P[k * 4 + 1] = d[i + 1] * a / 255;
+            P[k * 4 + 2] = d[i + 2] * a / 255;
+            P[k * 4 + 3] = a;
+
+            known[k] = 1;
+        }
+    }
+
+    // dal bordo verso il centro delle lettere: ogni pixel prende la media dei vicini gia' noti
+    let left = unknown.length;
+
+    for (let round = 0; round < 40 && left > 0; round++) {
+
+        const done = [];
+
+        for (const k of unknown) {
+
+            if (known[k]) continue;
+
+            const kx = k % rw, ky = (k / rw) | 0;
+
+            let r = 0, g = 0, b = 0, a = 0, ws = 0;
+
+            for (let dy = -1; dy <= 1; dy++) {
+
+                for (let dx = -1; dx <= 1; dx++) {
+
+                    if (!dx && !dy) continue;
+
+                    const nx = kx + dx, ny = ky + dy;
+
+                    if (nx < 0 || ny < 0 || nx >= rw || ny >= rh) continue;
+
+                    const nk = ny * rw + nx;
+
+                    if (!known[nk]) continue;
+
+                    const w = (dx && dy) ? 0.7 : 1;
+
+                    r += P[nk * 4] * w; g += P[nk * 4 + 1] * w; b += P[nk * 4 + 2] * w; a += P[nk * 4 + 3] * w;
+
+                    ws += w;
+                }
+            }
+
+            if (ws > 0) done.push([k, r / ws, g / ws, b / ws, a / ws]);
+        }
+
+        if (!done.length) break;
+
+        for (const [k, r, g, b, a] of done) {
+
+            P[k * 4] = r; P[k * 4 + 1] = g; P[k * 4 + 2] = b; P[k * 4 + 3] = a;
+
+            known[k] = 1;
+
+            left--;
+        }
+    }
+
+    // dove sotto c'e' qualcosa (un effetto), si "stira" la sfumatura attraverso il buco: ogni pixel diventa la
+    // media dei 4 vicini, ripetuto finche' si assesta (cosi' le sfumature continuano dritte invece di appiattirsi)
+    let effect = false;
+
+    for (const k of unknown) if (known[k] && P[k * 4 + 3] >= 1.5) { effect = true; break; }
+
+    if (effect) {
+
+        for (let it = 0; it < 120; it++) {
+
+            for (const k of unknown) {
+
+                if (!known[k]) continue;
+
+                const kx = k % rw, ky = (k / rw) | 0;
+
+                let r = 0, g = 0, b = 0, a = 0, n = 0;
+
+                if (kx > 0) { const q = (k - 1) * 4; r += P[q]; g += P[q + 1]; b += P[q + 2]; a += P[q + 3]; n++; }
+                if (kx < rw - 1) { const q = (k + 1) * 4; r += P[q]; g += P[q + 1]; b += P[q + 2]; a += P[q + 3]; n++; }
+                if (ky > 0) { const q = (k - rw) * 4; r += P[q]; g += P[q + 1]; b += P[q + 2]; a += P[q + 3]; n++; }
+                if (ky < rh - 1) { const q = (k + rw) * 4; r += P[q]; g += P[q + 1]; b += P[q + 2]; a += P[q + 3]; n++; }
+
+                if (n) { P[k * 4] = r / n; P[k * 4 + 1] = g / n; P[k * 4 + 2] = b / n; P[k * 4 + 3] = a / n; }
+            }
+        }
+    }
+
+    // di nuovo in colori normali, solo nei pixel delle lettere
+    for (const k of unknown) {
+
+        const x = rx0 + (k % rw), y = ry0 + ((k / rw) | 0);
+
+        const i = (y * W + x) * 4;
+
+        const a = P[k * 4 + 3];
+
+        if (!known[k] || a < 1.5) { d[i] = d[i + 1] = d[i + 2] = d[i + 3] = 0; continue; }
+
+        d[i] = Math.max(0, Math.min(255, Math.round(P[k * 4] * 255 / a)));
+        d[i + 1] = Math.max(0, Math.min(255, Math.round(P[k * 4 + 1] * 255 / a)));
+        d[i + 2] = Math.max(0, Math.min(255, Math.round(P[k * 4 + 2] * 255 / a)));
+        d[i + 3] = Math.max(0, Math.min(255, Math.round(a)));
+    }
+}
+
 function clearRects(img, W, H, cuts) {
 
     if (!cuts || !cuts.length) return;
@@ -237,12 +436,15 @@ function clearRects(img, W, H, cuts) {
 
 /*
     Legge un PNG animato (o un PNG normale: un solo fotogramma).
-    "cuts": rettangoli da togliere da ogni fotogramma (per esempio il logo): [{ l, b, w, h }] misurati
-    dall'angolo in basso a sinistra del fotogramma intero (l = da sinistra, b = dal basso).
-    Ritorna { width, height, animated, frames: [{ bx, by, bw, bh, data | null, delay }] }
+    "cuts": rettangoli da togliere da ogni fotogramma (per esempio una scritta): [{ l, b, w, h }] misurati
+    dall'angolo in basso a sinistra del fotogramma intero (l = da sinistra, b = dal basso); puo' essere una
+    funzione (W, H, logoTolto) => [...] (logoTolto = il logo e' stato tolto lettera per lettera).
+    opts.logo = true: se il fotogramma 640x400 ha il logo della libreria lo toglie lettera per lettera, senza
+    tagliare gli effetti che passano da li' (vedi removeLogo).
+    Ritorna { width, height, animated, logo, frames: [{ bx, by, bw, bh, data | null, delay }] }
     dove "delay" e' in millisecondi e "data" sono i pixel RGBA del ritaglio (null = fotogramma vuoto).
 */
-export async function decodeApng(buffer, onProgress, cuts = []) {
+export async function decodeApng(buffer, onProgress, cuts = [], opts = {}) {
 
     const bytes = new Uint8Array(buffer);
 
@@ -274,8 +476,23 @@ export async function decodeApng(buffer, onProgress, cuts = []) {
 
     ctx.imageSmoothingEnabled = false;
 
-    // i rettangoli possono dipendere dalla misura del fotogramma
-    if (typeof cuts === 'function') cuts = cuts(W, H);
+    // il logo si cerca nel primo fotogramma; i rettangoli possono dipendere dalla misura e dal logo
+    let logoOK = null;
+    let rects = [];
+
+    const clean = (img) => {
+
+        if (logoOK === null) {
+
+            logoOK = !!(opts && opts.logo) && logoFits(img, W, H);
+
+            rects = typeof cuts === 'function' ? cuts(W, H, logoOK) : (cuts || []);
+        }
+
+        if (logoOK) removeLogo(img, W, H);
+
+        clearRects(img, W, H, rects);
+    };
 
     const frames = [];
 
@@ -290,13 +507,13 @@ export async function decodeApng(buffer, onProgress, cuts = []) {
 
         const img0 = ctx.getImageData(0, 0, W, H);
 
-        clearRects(img0, W, H, cuts);
+        clean(img0);
 
         const t = trimFrame(img0, W, H);
 
         frames.push(t ? { ...t, delay: 100 } : { bx: 0, by: 0, bw: 0, bh: 0, data: null, delay: 100 });
 
-        return { width: W, height: H, animated: false, frames };
+        return { width: W, height: H, animated: false, logo: !!logoOK, frames };
     }
 
     // ---- APNG: i dati di ogni fotogramma
@@ -379,7 +596,7 @@ export async function decodeApng(buffer, onProgress, cuts = []) {
         // il fotogramma come lo si vede (senza i rettangoli tolti); la tela sotto resta intera per i fotogrammi dopo
         const shown = ctx.getImageData(0, 0, W, H);
 
-        clearRects(shown, W, H, cuts);
+        clean(shown);
 
         const t = trimFrame(shown, W, H);
 
@@ -396,7 +613,7 @@ export async function decodeApng(buffer, onProgress, cuts = []) {
         if (onProgress) onProgress(n, list.length);
     }
 
-    return { width: W, height: H, animated: true, frames };
+    return { width: W, height: H, animated: true, logo: !!logoOK, frames };
 }
 
 
