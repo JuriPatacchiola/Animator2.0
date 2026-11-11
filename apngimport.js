@@ -582,8 +582,18 @@ export function expandLinks(text) {
     return out;
 }
 
+// la casella "servizio esterno" va lasciata vuota; se ci hanno incollato il link dell'immagine non e' un servizio
+export function proxyLooksWrong(proxy) {
+
+    const t = String(proxy || '').trim();
+
+    if (!t) return false;
+
+    return /\.(png|apng|jpe?g|gif|webp)(\?.*)?$/i.test(t) || /bravefrontier/i.test(t);
+}
+
 /*
-    Scarica gli APNG. Ritorna { files: [File], failed: [{ url, why }] }.
+    Scarica gli APNG. Ritorna { files: [File], failed: [{ url, why, blocked, unreachable }] }.
     Il browser puo' leggere un file di un altro sito solo se quel sito lo permette (CORS):
     se non lo permette si scarica il file a mano e lo si trascina nella pagina.
     "proxy" (facoltativo): testo da mettere davanti all'indirizzo (l'indirizzo viene codificato).
@@ -623,7 +633,21 @@ export async function fetchApngs(items, proxy = '', onStatus = null) {
 
         } catch (e) {
 
-            failed.push({ url: it.url, why: 'il browser non riesce a leggerlo (il sito non lo permette ad altre pagine, oppure sei offline)', blocked: true });
+            // il browser non dice perche': provo una richiesta "cieca" (senza leggere la risposta).
+            // Se arriva, il sito c'e' ma non permette di leggere i file da un'altra pagina (blocco CORS).
+            let reachable = false;
+
+            try {
+
+                await fetch(target, { mode: 'no-cors', cache: 'no-store' });
+
+                reachable = true;
+
+            } catch (e2) { /* non raggiungibile */ }
+
+            failed.push(reachable
+                ? { url: it.url, why: 'il sito risponde ma non permette ad altre pagine di leggere i suoi file (blocco CORS)', blocked: true }
+                : { url: it.url, why: 'il sito non risponde (indirizzo sbagliato, rete assente o sito che blocca la richiesta)', unreachable: true });
         }
     }));
 

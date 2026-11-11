@@ -1,5 +1,5 @@
 import { createAPNGWriter, createZipWriter } from './apng.js';
-import { animFromName, buildApngUnit, decodeApng, expandLinks, fetchApngs, isApng, unitIdFromNames } from './apngimport.js';
+import { animFromName, buildApngUnit, decodeApng, expandLinks, fetchApngs, isApng, proxyLooksWrong, unitIdFromNames } from './apngimport.js';
 import { initAssembler } from './assembler.js';
 import { EK, Eraser } from './eraser.js';
 import { createGifWriter, createPaletteBuilder } from './gif.js';
@@ -1574,9 +1574,21 @@ apngEls.fetch.addEventListener('click', async () => {
 
     try {
 
-        const { files, failed } = await fetchApngs(items, apngEls.proxy.value.trim());
+        let proxy = apngEls.proxy.value.trim();
 
-        const notes = failed.map(f => `⚠ ${f.url.split('/').pop()}: ${f.why}`);
+        const pre = [];
+
+        // la casella del servizio esterno e' facoltativa: se ci hanno messo un link di immagine la ignoro
+        if (proxyLooksWrong(proxy)) {
+
+            pre.push('ℹ Nella casella «servizio esterno» c\'era un link di immagine: l\'ho ignorata (quella casella va lasciata vuota).');
+
+            proxy = '';
+        }
+
+        const { files, failed } = await fetchApngs(items, proxy);
+
+        const notes = [...pre, ...failed.map(f => `⚠ ${f.url.split('/').pop()}: ${f.why}`)];
 
         if (!files.length) {
 
@@ -1585,8 +1597,10 @@ apngEls.fetch.addEventListener('click', async () => {
             apngSay([
                 ...notes,
                 blocked
-                    ? 'Il sito non lascia scaricare i file da questa pagina. Soluzione sicura: apri il link nel browser, tasto destro → «Salva immagine con nome», poi trascina qui i file (oppure usa «Importa APNG dal PC»).'
-                    : 'Controlla il numero o il link.'
+                    ? 'Il sito non permette di scaricare i suoi file da questa pagina (è una protezione del sito, non un errore del programma). Soluzione sicura: apri il link nel browser, tasto destro → «Salva immagine con nome», poi trascina qui i file (oppure usa «Importa APNG dal PC»).'
+                    : failed.some(f => f.unreachable)
+                        ? 'Controlla il link e la connessione. Se il link si apre nel browser ma qui no, il sito blocca la richiesta: salva i file a mano e importali dal PC.'
+                        : 'Controlla il numero o il link.'
             ].join('\n'));
 
             return;
