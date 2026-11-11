@@ -1,5 +1,5 @@
 import { createAPNGWriter, createZipWriter } from './apng.js';
-import { animFromName, buildApngUnit, decodeApng, expandLinks, fetchApngs, isApng, proxyLooksWrong, unitIdFromNames } from './apngimport.js';
+import { animFromName, APNG_LIBRARY, buildApngUnit, clampSplit, decodeApng, expandLinks, fetchApngs, guessDefaultSplit, isApng, proxyLooksWrong, sliceDefault, unitIdFromNames } from './apngimport.js';
 import { initAssembler } from './assembler.js';
 import { EK, Eraser } from './eraser.js';
 import { createGifWriter, createPaletteBuilder } from './gif.js';
@@ -7,7 +7,6 @@ import { Parser } from './parser.js';
 import { Renderer } from './renderer.js';
 import { buildSamUnit, reduceSamSequence } from './sam.js';
 import {
-    TICK_MS,
     composeFrame,
     computeGroundShifts,
     findShadowKeys,
@@ -16,7 +15,8 @@ import {
     sampleSequence,
     sequenceBounds,
     sequenceTotalTicks,
-    setSamSoft
+    setSamSoft,
+    TICK_MS
 } from './smoothing.js';
 import { encodeWebmAlpha, inspectWebm } from './webm.js';
 import { encodeAnimatedWebp, inspectWebp } from './webp.js';
@@ -1357,6 +1357,13 @@ const apngEls = {
     proxy: document.getElementById('apngProxy'),
     info: document.getElementById('apngInfo'),
     save: document.getElementById('apngSave'),
+    defaultPick: document.getElementById('apngDefault'),
+    splitBox: document.getElementById('apngSplitBox'),
+    strip: document.getElementById('apngStrip'),
+    splitIdle: document.getElementById('splitIdle'),
+    splitReps: document.getElementById('splitReps'),
+    splitMove: document.getElementById('splitMove'),
+    splitInfo: document.getElementById('apngSplitInfo'),
     feet: document.getElementById('apngFeet'),
     cut: document.getElementById('apngCut'),
     reset: document.getElementById('apngReset'),
@@ -1371,7 +1378,8 @@ const APNG_PREF_KEY = 'animator.apng';
 //   cuts = rettangoli da togliere (logo, scritta), misurati dall'angolo in basso a sinistra {l, b, w, h}
 const APNG_POS_KEY = 'animator.apngPos';
 
-const apngPos = { feet: null, cuts: [] };
+// preset = impostazioni automatiche della libreria (fotogrammi 640x400: piedi e logo a posto da soli)
+const apngPos = { feet: null, cuts: [], preset: true };
 
 try {
 
@@ -1381,10 +1389,19 @@ try {
 
         if (v.feet && Number.isFinite(v.feet.dx) && Number.isFinite(v.feet.dy)) apngPos.feet = { dx: v.feet.dx, dy: v.feet.dy };
 
+        if (v.preset === false) apngPos.preset = false;
+
         if (Array.isArray(v.cuts)) apngPos.cuts = v.cuts.filter(c => c && [c.l, c.b, c.w, c.h].every(Number.isFinite) && c.w > 0 && c.h > 0).slice(0, 12);
     }
 
 } catch (e) { /* ignoro */ }
+
+const apngIsLibrary = (w, h) => w === APNG_LIBRARY.w && h === APNG_LIBRARY.h;
+
+// rettangoli da togliere e punto dei piedi per un fotogramma di w x h
+const apngCutsFor = (w, h) => [...(apngPos.preset && apngIsLibrary(w, h) ? APNG_LIBRARY.cuts : []), ...apngPos.cuts];
+
+const apngFeetFor = (w, h) => apngPos.feet || (apngPos.preset && apngIsLibrary(w, h) ? APNG_LIBRARY.feet : { dx: 0, dy: 0 });
 
 function apngSavePos() {
 
@@ -1394,6 +1411,11 @@ function apngSavePos() {
 // spostamento fatto a mano su ogni animazione (si vede e si salva con l'unita')
 state.apngNudge = {};
 state.apngFiles = [];
+
+// default (un solo APNG con tutto): file, tagli scelti ({idleLen, idleReps, moveLen, user}) e fotogrammi per le miniature
+state.apngDefaultFile = null;
+state.apngSplit = null;
+state.apngDefDec = null;
 state.apngAnchors = {};
 state.apngSizes = {};
 
@@ -1432,6 +1454,9 @@ function apngRefresh() {
     for (const el of [apngEls.feet, apngEls.cut, apngEls.reset, apngEls.step, ...apngEls.nudge]) el.disabled = !state.imported;
 
     if (!state.imported && apngPick.mode) apngDisarm();
+
+    // i tagli del default si vedono solo finche' l'unita' viene da un default
+    apngEls.splitBox.hidden = !(state.imported && state.apngDefaultFile && state.apngDefDec && state.apngSplit);
 }
 
 // quali file di un gruppo sono APNG (o PNG con il nome di un'animazione, senza CGG / CGS / .sam)
@@ -1463,19 +1488,47 @@ async function loadApngFiles(files, extraNotes = [], opts = {}) {
 
         const found = {};
 
-        for (const f of files) {
+        // ogni file si legge una volta sola
+        const decCache = new Map();
 
-            let a = animFromName(f.name);
+        const decodeOne = async (f) => {
 
-            // un solo file e il nome non dice cosa e': e' l'idle
-            if (!a && files.length === 1) {
+            if (!decCache.has(f)) {
 
-                a = 'idle';
+                apngSay(`Lettura di ${f.name}…`);
 
-                notes.push(`ℹ «${f.name}» non dice se è idle, atk o move: lo uso come Idle.`);
+                decCache.set(f, await decodeApng(await f.arrayBuffer(), (n, m) => apngSay(`Lettura di ${f.name}: fotogramma ${n} / ${m}`), apngCutsFor));
             }
 
-            if (!a) { notes.push(`⚠ Non so che animazione sia «${f.name}» (il nome deve contenere idle, atk o move): ignorato.`); continue; }
+            return decCache.get(f);
+        };
+
+        for (const f of files) {
+
+            let a = (opts.defaultFile && f === opts.defaultFile) ? 'default' : animFromName(f.name);
+
+            // un solo file e il nome non dice cosa e': se ha l'idle ripetuto e poi altro e' un default, altrimenti e' l'idle
+            if (!a && files.length === 1) {
+
+                const probe = await decodeOne(f);
+
+                const g = guessDefaultSplit(probe);
+
+                if (g.repeated && probe.frames.length - g.idleLen * g.idleReps >= 2) {
+
+                    a = 'default';
+
+                    notes.push(`ℹ «${f.name}» ha l'idle ripetuto e poi altri fotogrammi: lo tratto come DEFAULT e lo taglio in idle / move / atk.`);
+
+                } else {
+
+                    a = 'idle';
+
+                    notes.push(`ℹ «${f.name}» non dice se è idle, atk o move: lo uso come Idle.`);
+                }
+            }
+
+            if (!a) { notes.push(`⚠ Non so che animazione sia «${f.name}» (il nome deve contenere idle, atk, move o default): ignorato.`); continue; }
 
             if (found[a]) { notes.push(`⚠ Due file per «${a}»: uso il primo, ignorato ${f.name}.`); continue; }
 
@@ -1484,24 +1537,50 @@ async function loadApngFiles(files, extraNotes = [], opts = {}) {
 
         if (!Object.keys(found).length) throw new Error('nessun file riconosciuto');
 
+        // ---- default: idle / move / atk si ricavano da un solo APNG (i file separati, se ci sono, hanno la precedenza)
+        const needDefault = !!found.default && ['idle', 'atk', 'move'].some(a => !found[a]);
+
+        let split = null;
+        let defDec = null;
+        let sliced = null;
+
+        if (found.default && !needDefault) notes.push('ℹ Ho già idle, atk e move separati: il default non serve.');
+
+        if (needDefault) {
+
+            defDec = await decodeOne(found.default);
+
+            const guess = guessDefaultSplit(defDec);
+
+            const mine = opts.keep && state.apngSplit;
+
+            split = { ...clampSplit(mine || guess, defDec.frames.length), user: !!(mine && mine.user), repeated: guess.repeated, moveGuessed: !mine && guess.moveGuessed };
+
+            sliced = sliceDefault(defDec, split);
+        }
+
         const anims = [];
 
         for (const a of ['idle', 'atk', 'move']) {
 
-            if (!found[a]) continue;
+            if (found[a]) {
 
-            const name = found[a].name;
+                anims.push({ name: a, dec: await decodeOne(found[a]) });
 
-            apngSay(`Lettura di ${name}…`);
+            } else if (sliced && sliced[a] && sliced[a].frames.length) {
 
-            const dec = await decodeApng(await found[a].arrayBuffer(), (n, m) => apngSay(`Lettura di ${name}: fotogramma ${n} / ${m}`), apngPos.cuts);
-
-            anims.push({ name: a, dec });
+                anims.push({ name: a, dec: sliced[a] });
+            }
         }
 
-        const unit = buildApngUnit(anims, TICK_MS, apngPos.feet || { dx: 0, dy: 0 });
+        if (!anims.length) throw new Error('nessun fotogramma da importare');
 
-        // per rifare l'importazione (piedi, logo) senza chiedere di nuovo i file
+        const unit = buildApngUnit(anims, TICK_MS, apngFeetFor);
+
+        // per rifare l'importazione (piedi, logo, tagli) senza chiedere di nuovo i file
+        state.apngDefaultFile = needDefault ? found.default : null;
+        state.apngSplit = split;
+        state.apngDefDec = defDec;
         state.apngFiles = Object.values(found);
         state.apngAnchors = unit.anchors;
         state.apngSizes = unit.sizes;
@@ -1547,11 +1626,28 @@ async function loadApngFiles(files, extraNotes = [], opts = {}) {
             if (nd) for (const f of seq) { f.xOffset = nd.x; f.yOffset = nd.y; }
         }
 
+        // nel menu solo le animazioni che l'unita' ha davvero (senza move non compare «Move»)
+        fillAnimOptions([['idle', 'Idle'], ['atk', 'Attack'], ['move', 'Move']]
+            .filter(([v]) => state.sequences[v] && state.sequences[v].length)
+            .concat([['all', 'Completa (idle + move + attack)']]));
+
+        if ([...selectAnim.options].some(o => o.value === state.current)) selectAnim.value = state.current;
+
+        // «Completa» = il default: idle ripetuto come nel file, poi move e atk una volta
+        if (split && (!opts.keep || opts.splitEdit)) {
+
+            repeatInputs.idle.value = split.idleReps;
+            repeatInputs.move.value = 1;
+            repeatInputs.atk.value = 1;
+        }
+
         rebuildAll();
 
         Eraser.attach(Renderer.image, state.framesDBOrig, state.framesDB);
 
         eraserRefresh();
+
+        apngRenderSplit();
 
         apngRefresh();
 
@@ -1581,9 +1677,37 @@ async function loadApngFiles(files, extraNotes = [], opts = {}) {
 
                 return `${label[k]}: ${z.frames} fotogramm${z.frames === 1 ? 'o' : 'i'} · ${z.w}×${z.h} · ${(ms / 1000).toFixed(2).replace('.', ',')} s${z.animated ? '' : ' (PNG fermo)'}`;
             }),
+            ...(split ? (() => {
+
+                const n = defDec.frames.length;
+
+                const block = split.idleLen * split.idleReps;
+
+                const atkLen = n - block - split.moveLen;
+
+                return [
+                    `📦 Default di ${n} fotogrammi tagliato in: Idle ${split.idleLen} (ripetuto ×${split.idleReps}) · Move ${split.moveLen || 'nessuno'} · Atk ${atkLen}${split.user ? ' — tagli scelti da te' : ''}`,
+                    split.moveGuessed
+                        ? '   Il move l\'ho indovinato dallo scatto in avanti: se non è giusto clicca, nell\'elenco qui sotto, il primo fotogramma dell\'attacco.'
+                        : (!split.user && !split.moveLen)
+                            ? '   Nessuno scatto in avanti: l\'unità non ha il move. Se invece ce l\'ha, clicca nell\'elenco qui sotto il primo fotogramma dell\'attacco.'
+                            : ''
+                ].filter(Boolean);
+            })() : []),
             `${unit.cellCount} disegni diversi sul foglio`,
-            apngPos.feet ? '📍 Piedi: posizione ricordata' : '📍 Il personaggio non sta sulla croce gialla? «Segna i piedi» e clicca dove poggiano.',
-            apngPos.cuts.length ? `✂ Logo / scritte tolte: ${apngPos.cuts.length}` : '✂ C\'è un logo o una scritta? «Togli il logo» e disegna un rettangolo sopra.',
+            ...(() => {
+
+                const lib = sizes.some(([, z]) => apngIsLibrary(z.w, z.h)) && apngPos.preset;
+
+                return [
+                    apngPos.feet ? '📍 Piedi: posizione ricordata'
+                        : lib ? '📍 Piedi: messi in automatico sulla croce gialla (fotogrammi 640×400)'
+                            : '📍 Il personaggio non sta sulla croce gialla? «Segna i piedi» e clicca dove poggiano.',
+                    (lib || apngPos.cuts.length)
+                        ? `✂ Logo e scritta tolti${lib ? ' in automatico' : ''}${apngPos.cuts.length ? ` (+ ${apngPos.cuts.length} tuoi rettangoli)` : ''}`
+                        : '✂ C\'è un logo o una scritta? «Togli il logo» e disegna un rettangolo sopra.'
+                ];
+            })(),
             ...notes
         ];
 
@@ -1640,6 +1764,149 @@ apngEls.files.addEventListener('change', async (event) => {
     await loadApngFiles(list);
 });
 
+// ---- DEFAULT: un solo APNG con tutto (idle ripetuto + move + atk), tagliato in tre
+apngEls.defaultPick.addEventListener('change', async (event) => {
+
+    const list = [...event.target.files];
+
+    event.target.value = '';
+
+    if (!list.length) return;
+
+    guessUnitName(list);
+
+    // il file scelto qui e' sempre un default, qualunque nome abbia; un nuovo default riparte dai tagli indovinati
+    state.apngSplit = null;
+
+    await loadApngFiles([list[0]], list.length > 1 ? ['ℹ Ho usato solo il primo file: il default è uno solo.'] : [], { defaultFile: list[0] });
+});
+
+const SPLIT_COLORS = { idle: '#3b82f6', move: '#22c55e', atk: '#ef4444' };
+
+// elenco dei fotogrammi del default, colorati per animazione (blu idle, verde move, rosso atk)
+function apngRenderSplit() {
+
+    const dec = state.apngDefDec, split = state.apngSplit;
+
+    apngEls.strip.replaceChildren();
+
+    if (!dec || !split) return;
+
+    const fr = dec.frames;
+
+    // zona che contiene tutti i disegni (per le miniature)
+    let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+
+    for (const f of fr) {
+
+        if (!f.data) continue;
+
+        x0 = Math.min(x0, f.bx); y0 = Math.min(y0, f.by);
+        x1 = Math.max(x1, f.bx + f.bw); y1 = Math.max(y1, f.by + f.bh);
+    }
+
+    if (x1 <= x0 || y1 <= y0) { x0 = 0; y0 = 0; x1 = 1; y1 = 1; }
+
+    const TW = 58, TH = 50;
+
+    const k = Math.min(TW / (x1 - x0), TH / (y1 - y0));
+
+    const dw = Math.max(1, Math.round((x1 - x0) * k)), dh = Math.max(1, Math.round((y1 - y0) * k));
+
+    const block = split.idleLen * split.idleReps;
+    const moveEnd = block + split.moveLen;
+
+    fr.forEach((f, i) => {
+
+        const seg = i < block ? 'idle' : i < moveEnd ? 'move' : 'atk';
+
+        const cell = document.createElement('div');
+
+        cell.dataset.i = String(i);
+        cell.title = `Fotogramma ${i + 1} · ${f.delay} ms · ${seg === 'idle' ? 'idle' : seg === 'move' ? 'move' : 'attacco'}\nClic = da qui inizia l'attacco`;
+        cell.style.cssText = `position:relative;width:${TW}px;height:${TH + 12}px;border:2px solid ${SPLIT_COLORS[seg]};border-radius:4px;background:#1f2430;cursor:pointer;box-sizing:content-box;overflow:hidden;${seg === 'idle' && i >= split.idleLen ? 'opacity:.5' : ''}`;
+
+        const cv = document.createElement('canvas');
+
+        cv.width = TW;
+        cv.height = TH;
+        cv.style.cssText = 'display:block';
+
+        if (f.data) {
+
+            const tmp = document.createElement('canvas');
+
+            tmp.width = f.bw;
+            tmp.height = f.bh;
+
+            tmp.getContext('2d').putImageData(new ImageData(f.data, f.bw, f.bh), 0, 0);
+
+            const c2 = cv.getContext('2d');
+
+            c2.imageSmoothingEnabled = false;
+
+            c2.drawImage(tmp, Math.round((f.bx - x0) * k + (TW - dw) / 2), Math.round((f.by - y0) * k + (TH - dh) / 2), Math.max(1, Math.round(f.bw * k)), Math.max(1, Math.round(f.bh * k)));
+        }
+
+        const lab = document.createElement('div');
+
+        lab.textContent = String(i + 1);
+        lab.style.cssText = `font-size:10px;line-height:12px;text-align:center;color:#fff;background:${SPLIT_COLORS[seg]}`;
+
+        cell.append(cv, lab);
+
+        apngEls.strip.append(cell);
+    });
+
+    apngEls.splitIdle.value = split.idleLen;
+    apngEls.splitReps.value = split.idleReps;
+    apngEls.splitMove.value = split.moveLen;
+    apngEls.splitIdle.max = apngEls.splitMove.max = apngEls.splitReps.max = fr.length;
+
+    apngEls.splitInfo.textContent = `Idle ${split.idleLen} × ${split.idleReps} · Move ${split.moveLen || 'nessuno'} · Atk ${fr.length - block - split.moveLen}`;
+}
+
+// nuovi tagli: si rifa l'importazione con gli stessi file
+async function apngApplySplit(next) {
+
+    if (!state.apngDefDec) return;
+
+    state.apngSplit = { ...clampSplit(next, state.apngDefDec.frames.length), user: true };
+
+    await apngReimport([], { splitEdit: true });
+}
+
+apngEls.strip.addEventListener('click', (ev) => {
+
+    const cell = ev.target.closest('[data-i]');
+
+    if (!cell || !state.apngSplit) return;
+
+    const i = Number(cell.dataset.i);
+
+    const s = state.apngSplit;
+
+    const block = s.idleLen * s.idleReps;
+
+    if (i < block) {
+
+        apngSay('ℹ Quei fotogrammi sono l\'idle (si cambiano con i numeri qui sotto). Per il move clicca il primo fotogramma dell\'ATTACCO.');
+
+        return;
+    }
+
+    apngApplySplit({ ...s, moveLen: i - block });
+});
+
+for (const el of [apngEls.splitIdle, apngEls.splitReps, apngEls.splitMove]) {
+
+    el.addEventListener('change', () => apngApplySplit({
+        idleLen: apngEls.splitIdle.value,
+        idleReps: apngEls.splitReps.value,
+        moveLen: apngEls.splitMove.value
+    }));
+}
+
 apngEls.fetch.addEventListener('click', async () => {
 
     const items = expandLinks(apngEls.links.value);
@@ -1673,7 +1940,10 @@ apngEls.fetch.addEventListener('click', async () => {
 
         const { files, failed } = await fetchApngs(items, proxy);
 
-        const notes = [...pre, ...failed.map(f => `⚠ ${f.url.split('/').pop()}: ${f.why}`)];
+        // il default che non esiste non e' un errore (non tutte le unita' ce l'hanno): se serve lo dice il resto
+        const optionalMissing = (f) => items.some(i => i.optional && i.url === f.url);
+
+        const notes = [...pre, ...failed.filter(f => !optionalMissing(f)).map(f => `⚠ ${f.url.split('/').pop()}: ${f.why}`)];
 
         if (!files.length) {
 
@@ -1967,11 +2237,11 @@ function drawApngPick() {
     ctx.restore();
 }
 
-async function apngReimport(notes = []) {
+async function apngReimport(notes = [], extra = {}) {
 
     if (!state.apngFiles.length) return;
 
-    await loadApngFiles(state.apngFiles, notes, { keep: true });
+    await loadApngFiles(state.apngFiles, notes, { keep: true, defaultFile: state.apngDefaultFile, ...extra });
 }
 
 Renderer.canvas.addEventListener('mousedown', (ev) => {
@@ -2073,6 +2343,7 @@ apngEls.reset.addEventListener('click', () => {
 
     apngPos.feet = null;
     apngPos.cuts = [];
+    apngPos.preset = true;
 
     apngSavePos();
 
@@ -2080,7 +2351,7 @@ apngEls.reset.addEventListener('click', () => {
 
     apngDisarm();
 
-    apngReimport(['↺ Posizione e logo come nel file.']);
+    apngReimport(['↺ Posizione e logo tornati automatici (i tuoi piedi e rettangoli sono dimenticati).']);
 });
 
 // frecce: spostano tutta l'animazione che stai guardando (idle, atk o move)

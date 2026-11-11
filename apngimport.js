@@ -19,6 +19,18 @@ export const APNG_BASE = 'https://library.bravefrontier.jp/bf1_rsc/unit/apng/';
 
 const ANIMS = ['idle', 'atk', 'move'];
 
+/*
+    Fotogrammi della libreria (640x400): il personaggio sta sempre nello stesso punto (il centro dell'ombra e'
+    in 440,280) e in basso a sinistra c'e' il logo con la scritta (x 10-160, y 302-389). Misurato su un APNG vero.
+    feet = punto dei piedi dal centro in basso del fotogramma; cuts = rettangolo dal basso a sinistra.
+*/
+export const APNG_LIBRARY = {
+    w: 640,
+    h: 400,
+    feet: { dx: 120, dy: -120 },
+    cuts: [{ l: 8, b: 8, w: 160, h: 96 }]
+};
+
 // ---- CRC32 (serve per costruire i PNG dei singoli fotogrammi)
 const CRC_TABLE = (() => {
 
@@ -262,6 +274,9 @@ export async function decodeApng(buffer, onProgress, cuts = []) {
 
     ctx.imageSmoothingEnabled = false;
 
+    // i rettangoli possono dipendere dalla misura del fotogramma
+    if (typeof cuts === 'function') cuts = cuts(W, H);
+
     const frames = [];
 
     // ---- PNG normale: un fotogramma solo
@@ -456,7 +471,9 @@ export function buildApngUnit(anims, tickMs = 1000 / 60, feet = { dx: 0, dy: 0 }
     for (const { name, dec } of anims) {
 
         // punto dei piedi del personaggio nel fotogramma, misurato dal centro in basso (dx, dy): diventa lo 0,0 dell'animatore
-        const ax = Math.round(dec.width / 2 + (Number(feet && feet.dx) || 0)), ay = Math.round(dec.height + (Number(feet && feet.dy) || 0));
+        const ft = typeof feet === 'function' ? feet(dec.width, dec.height) : feet;
+
+        const ax = Math.round(dec.width / 2 + (Number(ft && ft.dx) || 0)), ay = Math.round(dec.height + (Number(ft && ft.dy) || 0));
 
         anchors[name] = { x: ax, y: ay };
 
@@ -553,10 +570,133 @@ export function buildApngUnit(anims, tickMs = 1000 / 60, feet = { dx: 0, dy: 0 }
 
 
 // ------------------------------------------------------------
+// DEFAULT: un solo APNG con tutta l'animazione
+//
+// Dentro ci sono, uno dopo l'altro: l'idle (un giro ripetuto 2 volte o piu'), poi - se l'unita' ce l'ha -
+// il move (lo scatto in avanti), poi l'attacco fino alla fine. Qui si trovano i tagli e si divide.
+// ------------------------------------------------------------
+
+function sameFrame(a, b) {
+
+    if (!a || !b) return false;
+
+    if (a.delay !== b.delay || a.bx !== b.bx || a.by !== b.by || a.bw !== b.bw || a.bh !== b.bh) return false;
+
+    if (!a.data || !b.data) return !a.data && !b.data;
+
+    return sameBytes(a.data, b.data);
+}
+
+/*
+    Indovina i tagli di un default decodificato (decodeApng):
+    - idle = il blocco di fotogrammi con cui il default comincia e che si ripete subito dopo
+             (idleLen fotogrammi, ripetuto idleReps volte);
+    - move = i fotogrammi subito dopo l'idle in cui il personaggio e' spostato in basso rispetto all'idle
+             (lo scatto in avanti); se non ce ne sono, l'unita' non ha il move;
+    - atk  = tutto il resto, fino alla fine.
+    Ritorna { idleLen, idleReps, moveLen, repeated (l'idle si ripete davvero), moveGuessed }.
+*/
+export function guessDefaultSplit(dec) {
+
+    const fr = dec.frames;
+    const n = fr.length;
+
+    const blockEq = (a, b, p) => {
+
+        for (let i = 0; i < p; i++) if (!sameFrame(fr[a + i], fr[b + i])) return false;
+
+        return true;
+    };
+
+    let best = null;
+
+    for (let p = 1; p * 2 <= n; p++) {
+
+        let reps = 1;
+
+        while ((reps + 1) * p <= n && blockEq(0, reps * p, p)) reps++;
+
+        // vince il blocco che copre piu' fotogrammi; a parita' il piu' corto
+        if (reps >= 2 && (!best || reps * p > best.idleLen * best.idleReps)) best = { idleLen: p, idleReps: reps };
+    }
+
+    let split;
+
+    if (best) {
+
+        split = { idleLen: best.idleLen, idleReps: best.idleReps, moveLen: 0, repeated: true, moveGuessed: false };
+
+    } else {
+
+        // l'idle non si ripete: prendo i primi fotogrammi con la stessa durata
+        let run = 1;
+
+        while (run < n && fr[run].delay === fr[0].delay) run++;
+
+        split = { idleLen: Math.max(1, Math.min(run, n - 1 || 1)), idleReps: 1, moveLen: 0, repeated: false, moveGuessed: false };
+    }
+
+    // lo scatto in avanti: dopo l'idle il personaggio sta piu' in basso di almeno 8 pixel
+    const bottom = (f) => (f && f.data ? f.by + f.bh : null);
+
+    const idleBottoms = fr.slice(0, split.idleLen).map(bottom).filter(v => v !== null);
+
+    const start = split.idleLen * split.idleReps;
+
+    if (idleBottoms.length) {
+
+        const ref = Math.max(...idleBottoms);
+
+        let k = 0;
+
+        while (start + k < n - 1 && k < 6 && bottom(fr[start + k]) !== null && bottom(fr[start + k]) >= ref + 8) k++;
+
+        if (k > 0) {
+
+            split.moveLen = k;
+            split.moveGuessed = true;
+        }
+    }
+
+    return split;
+}
+
+// tagli validi per un default di n fotogrammi
+export function clampSplit(s, n) {
+
+    const int = (v, d) => (Number.isFinite(Number(v)) ? Math.floor(Number(v)) : d);
+
+    const idleLen = Math.max(1, Math.min(n, int(s && s.idleLen, 1)));
+
+    let idleReps = Math.max(1, int(s && s.idleReps, 1));
+
+    while (idleLen * idleReps > n) idleReps--;
+
+    const moveLen = Math.max(0, Math.min(n - idleLen * idleReps, int(s && s.moveLen, 0)));
+
+    return { idleLen, idleReps, moveLen };
+}
+
+// divide il default: { idle, move, atk } come APNG decodificati (null se non ce ne sono)
+export function sliceDefault(dec, split) {
+
+    const fr = dec.frames;
+
+    const block = split.idleLen * split.idleReps;
+
+    const moveEnd = block + split.moveLen;
+
+    const part = (a, b) => (b > a ? { ...dec, animated: true, frames: fr.slice(a, b) } : null);
+
+    return { idle: part(0, split.idleLen), move: part(block, moveEnd), atk: part(moveEnd, fr.length) };
+}
+
+
+// ------------------------------------------------------------
 // NOMI E LINK
 // ------------------------------------------------------------
 
-// "10323_idle.png" -> 'idle'; null se il nome non dice quale animazione e'
+// "10323_idle.png" -> 'idle'; "10323_default.png" -> 'default'; null se il nome non dice quale animazione e'
 export function animFromName(name) {
 
     const n = String(name || '').toLowerCase().replace(/\.[a-z0-9]+$/, '');
@@ -564,6 +704,9 @@ export function animFromName(name) {
     if (/(^|[^a-z])idle([^a-z]|$)/.test(n)) return 'idle';
     if (/(^|[^a-z])(atk|attack)([^a-z]|$)/.test(n)) return 'atk';
     if (/(^|[^a-z])(move|walk)([^a-z]|$)/.test(n)) return 'move';
+
+    // l'animazione completa: idle ripetuto + (move) + atk in un solo APNG
+    if (/(^|[^a-z])(default|full)([^a-z]|$)/.test(n)) return 'default';
 
     return null;
 }
@@ -593,7 +736,7 @@ export function expandLinks(text) {
 
     const out = [];
 
-    const add = (url) => { if (!out.some(o => o.url === url)) out.push({ url, name: decodeURIComponent(url.split('?')[0].split('/').pop() || 'file.png') }); };
+    const add = (url, optional = false) => { if (!out.some(o => o.url === url)) out.push({ url, optional, name: decodeURIComponent(url.split('?')[0].split('/').pop() || 'file.png') }); };
 
     for (const t of tokens) {
 
@@ -601,13 +744,18 @@ export function expandLinks(text) {
 
             for (const a of ANIMS) add(`${APNG_BASE}${t}/${t}_${a}.png`);
 
+            // il default completo (se esiste serve per le animazioni che mancano; se non esiste non e' un errore)
+            add(`${APNG_BASE}${t}/${t}_default.png`, true);
+
         } else if (/^https?:\/\//i.test(t)) {
 
-            const m = /^(.*)_(idle|atk|move)(\.png)(\?.*)?$/i.exec(t);
+            const m = /^(.*)_(idle|atk|move|default)(\.png)(\?.*)?$/i.exec(t);
 
             if (m && tokens.length === 1) {
 
                 for (const a of ANIMS) add(`${m[1]}_${a}${m[3]}${m[4] || ''}`);
+
+                add(`${m[1]}_default${m[3]}${m[4] || ''}`, m[2].toLowerCase() !== 'default');
 
             } else {
 

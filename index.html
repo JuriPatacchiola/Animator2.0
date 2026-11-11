@@ -48,6 +48,11 @@
                     title="Per le unità di cui hai solo le animazioni già montate (APNG di idle, atk, move). Scegli i file (anche tutti insieme) o trascinali sulla pagina: il nome deve contenere idle, atk o move (per esempio 10323_idle.png). Ogni fotogramma diventa un disegno che puoi ritoccare con la gomma ed esportare.">
                     <input type="file" id="apngFiles" multiple accept=".png,image/png"> 🖼 Importa APNG dal PC
                 </label>
+                <label class="custom-file-upload"
+                    title="Hai un solo APNG con tutta l'animazione (idle ripetuto + eventuale scatto in avanti + attacco)? Scegli quello: lo taglio io in idle, move e atk. Poi «Salva come unità» ti dà il PNG, il CGG con tutti i fotogrammi e i tre CGS.">
+                    <input type="file" id="apngDefault" accept=".png,image/png"> 📦 Importa il DEFAULT (un solo APNG con
+                    tutto)
+                </label>
                 <textarea id="apngLinks" rows="3" spellcheck="false"
                     placeholder="Numero dell'unità (es. 10323) oppure i link degli APNG, uno per riga"
                     title="Scrivi solo il numero dell'unità (idle, atk e move vengono cercati nella libreria) oppure incolla il link di un APNG (provo anche gli altri due) oppure più link, uno per riga. Se il sito non permette il download dalla pagina, scarica i file a mano e importali dal PC."
@@ -66,6 +71,34 @@
                 <div id="apngInfo"
                     style="font-size:11px;line-height:1.5;color:#9ca3af;white-space:pre-line;margin:8px 0;word-break:break-word">
                 </div>
+                <div id="apngSplitBox" hidden
+                    style="margin:0 0 8px 0;padding:6px;border:1px solid #374151;border-radius:6px">
+                    <div style="font-size:11px;color:#9ca3af;line-height:1.4;margin-bottom:6px">
+                        <b style="color:#e5e7eb">Come ho tagliato il default</b> —
+                        <span style="color:#60a5fa">blu = idle</span>,
+                        <span style="color:#4ade80">verde = move</span>,
+                        <span style="color:#f87171">rosso = attacco</span>.
+                        <b>Clic su un fotogramma = da qui inizia l'attacco</b> (quelli prima, dopo l'idle, diventano il
+                        move).
+                    </div>
+                    <div id="apngStrip" style="display:flex;flex-wrap:wrap;gap:4px;max-height:280px;overflow:auto">
+                    </div>
+                    <div
+                        style="display:flex;align-items:center;flex-wrap:wrap;gap:4px;margin-top:6px;font-size:11px;color:#9ca3af">
+                        <span title="Quanti fotogrammi ha un giro di idle">Idle</span>
+                        <input type="number" id="splitIdle" min="1" step="1" value="1"
+                            style="width:46px;background:#2a2f3a;color:#e5e7eb;border:1px solid #4b5563;border-radius:4px;padding:3px">
+                        <span title="Quante volte si ripete il giro di idle all'inizio del default">×</span>
+                        <input type="number" id="splitReps" min="1" step="1" value="1"
+                            style="width:46px;background:#2a2f3a;color:#e5e7eb;border:1px solid #4b5563;border-radius:4px;padding:3px">
+                        <span
+                            title="Quanti fotogrammi di move (lo scatto in avanti) dopo l'idle; 0 = l'unità non ha il move">·
+                            Move</span>
+                        <input type="number" id="splitMove" min="0" step="1" value="0"
+                            style="width:46px;background:#2a2f3a;color:#e5e7eb;border:1px solid #4b5563;border-radius:4px;padding:3px">
+                    </div>
+                    <div id="apngSplitInfo" style="font-size:11px;color:#9ca3af;margin-top:4px"></div>
+                </div>
                 <div style="display:flex;gap:4px;margin-bottom:6px">
                     <button id="apngFeet" class="secondary-btn" style="flex:1;padding:8px 4px;font-size:12px" disabled
                         title="Clicca sull'anteprima dove poggiano i piedi del personaggio (il centro dell'ombra): quel punto diventa la croce gialla, come per le altre unità. Si ricorda per le prossime importazioni.">📍
@@ -75,7 +108,7 @@
                         Togli il logo</button>
                     <button id="apngReset" class="secondary-btn" style="flex:none;padding:8px 10px;font-size:12px"
                         disabled
-                        title="Rimette posizione e logo come nel file (dimentica anche quelli ricordati)">↺</button>
+                        title="Torna alle impostazioni automatiche: dimentica i piedi e i rettangoli che hai segnato tu e azzera gli spostamenti">↺</button>
                 </div>
                 <div style="display:flex;align-items:center;gap:4px;margin-bottom:8px;font-size:11px;color:#9ca3af">
                     <span title="Sposta tutta l'animazione che stai guardando (le altre restano ferme)">Sposta:</span>
