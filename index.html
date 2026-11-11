@@ -129,8 +129,16 @@
                         <option value="20">20 px</option>
                     </select>
                 </div>
+                <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;font-size:12px;color:#9ca3af">
+                    <label for="apngId" style="flex:none"
+                        title="Il numero entra nel nome di tutti i file salvati: unit_anime_10015.png, unit_cgg_10015.csv, unit_idle_cgs_10015.csv…">Numero
+                        unità</label>
+                    <input type="text" id="apngId" inputmode="numeric" spellcheck="false" placeholder="es. 10015"
+                        maxlength="20"
+                        style="flex:1;min-width:0;background:#2a2f3a;color:#e5e7eb;border:1px solid #4b5563;border-radius:4px;padding:5px;font-size:12px">
+                </div>
                 <button id="apngSave" class="secondary-btn" style="width:100%" disabled
-                    title="Trasforma l'unità che vedi in file veri: image.png + CGG + CGS (in un ZIP), con le cancellazioni della gomma già applicate. Poi li carichi quando vuoi con «Carica TUTTI i file insieme».">
+                    title="Trasforma l'unità che vedi in file veri: unit_anime_NUMERO.png + CGG + CGS (in un ZIP, con il «Numero unità» scritto qui sopra nei nomi), con le cancellazioni della gomma già applicate. Poi li carichi quando vuoi con «Carica TUTTI i file insieme».">
                     💾 Salva come unità (PNG + CGG + CGS)</button>
             </div>
 

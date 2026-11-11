@@ -1302,6 +1302,9 @@ async function loadSamFiles(files) {
 
         eraserRefresh();
 
+        apngEls.id.value = unitIdFromNames([samFile.name]);
+        delete apngEls.id.dataset.edited;
+
         apngRefresh();
 
         multiInfo.innerText = [
@@ -1357,6 +1360,7 @@ const apngEls = {
     proxy: document.getElementById('apngProxy'),
     info: document.getElementById('apngInfo'),
     save: document.getElementById('apngSave'),
+    id: document.getElementById('apngId'),
     defaultPick: document.getElementById('apngDefault'),
     splitBox: document.getElementById('apngSplitBox'),
     strip: document.getElementById('apngStrip'),
@@ -1444,6 +1448,49 @@ function apngSay(text) {
 
     apngEls.info.textContent = text;
 }
+
+// ---- numero dell'unita': entra nei nomi dei file salvati (unit_anime_10015.png, unit_cgg_10015.csv...)
+const apngCleanId = (v) => String(v || '').trim().replace(/[^0-9A-Za-z_-]+/g, '');
+
+// numero dell'unita' dai file caricati (PNG / CGG / CGS) o dall'importazione APNG
+function apngDerivedId() {
+
+    if (state.unitId) return state.unitId;
+
+    const names = [];
+
+    for (const id of SLOTS) {
+
+        const f = slotFile(id);
+
+        if (f) names.push(f.name);
+    }
+
+    return unitIdFromNames(names);
+}
+
+// nuova unita' caricata: la casella riparte dal numero trovato nei nomi (o vuota)
+function apngIdReset() {
+
+    apngEls.id.value = apngDerivedId();
+
+    delete apngEls.id.dataset.edited;
+}
+
+apngEls.id.addEventListener('input', () => {
+
+    apngEls.id.dataset.edited = '1';
+
+    const id = apngCleanId(apngEls.id.value);
+
+    // stesso numero come nome proposto per i file del sito (se non l'hai cambiato a mano)
+    if (id) {
+
+        state.unitGuess = id;
+
+        if (siteEls.name && !siteEls.name.dataset.edited) siteEls.name.value = id;
+    }
+});
 
 // il pulsante "Salva come unita'" serve quando c'e' un'unita' CGG / APNG (non per i .sam)
 function apngRefresh() {
@@ -1598,6 +1645,8 @@ async function loadApngFiles(files, extraNotes = [], opts = {}) {
         state.imported = true;
 
         state.unitId = unitIdFromNames(files.map(f => f.name));
+
+        if (!opts.keep) apngIdReset();
 
         state.framesDBOrig = unit.framesDB;
         state.framesDB = unit.framesDB;
@@ -1983,6 +2032,20 @@ async function saveUnitFiles() {
         return;
     }
 
+    // il numero dell'unita' serve per i nomi dei file (unit_anime_10015.png...): se manca lo chiedo
+    const id = apngCleanId(apngEls.id.value) || apngCleanId(apngDerivedId());
+
+    if (!id) {
+
+        apngSay('✋ Scrivi il numero dell\'unità (per esempio 10015) nella casella «Numero unità» qui sopra: entra nel nome dei file (unit_anime_10015.png, unit_cgg_10015.csv…). Poi premi di nuovo «Salva come unità».');
+
+        apngEls.id.focus();
+
+        return;
+    }
+
+    apngEls.id.value = id;
+
     apngEls.save.disabled = true;
 
     try {
@@ -2075,13 +2138,11 @@ async function saveUnitFiles() {
 
         }).join('\n') + '\n';
 
-        const id = state.unitId || siteFileBase().replace(/[^0-9A-Za-z_-]+/g, '') || 'unit';
-
         const enc = new TextEncoder();
 
         const zip = createZipWriter();
 
-        zip.addFile('image.png', new Uint8Array(await png.arrayBuffer()));
+        zip.addFile(`unit_anime_${id}.png`, new Uint8Array(await png.arrayBuffer()));
         zip.addFile(`unit_cgg_${id}.csv`, enc.encode(cgg));
 
         const names = [];
@@ -2101,7 +2162,7 @@ async function saveUnitFiles() {
 
         await saveFile(zip.finish(), `${id}-unita.zip`, 'ZIP', 'application/zip', '.zip');
 
-        apngSay(`💾 Salvato ${id}-unita.zip: image.png, unit_cgg_${id}.csv e i CGS di ${names.join(', ')}.\nDecomprimilo e, con «Carica TUTTI i file insieme», l'unità si apre come tutte le altre (con le cancellazioni della gomma già applicate).`);
+        apngSay(`💾 Salvato ${id}-unita.zip: unit_anime_${id}.png, unit_cgg_${id}.csv e i CGS di ${names.join(', ')}.\nDecomprimilo e, con «Carica TUTTI i file insieme», l'unità si apre come tutte le altre (con le cancellazioni della gomma già applicate).`);
 
     } catch (error) {
 
@@ -3192,6 +3253,8 @@ btnStart.onclick = async () => {
         Eraser.attach(Renderer.image, state.framesDBOrig, state.framesDB);
 
         eraserRefresh();
+
+        apngIdReset();
 
         apngRefresh();
 
